@@ -15,7 +15,7 @@ let state = {
   view: 'login',
   adminTab: 'overview',
   teacherTab: 'roster',
-  studentTab: 'grades',
+  studentTab: 'overview',
   selectedClassId: null,
   selectedClassSubjectId: null,
   selectedStudentSubjectId: null,
@@ -154,10 +154,10 @@ function attemptLogin(identifier, password){
     state.selectedClassId = cls.length ? cls[0].id : null;
     const assignments = state.selectedClassId ? subjectAssignmentsOfClass(state.selectedClassId).filter(cs=>cs.teacherId===u.id) : [];
     state.selectedClassSubjectId = assignments.length ? assignments[0].id : null;
-    state.teacherTab = 'roster';
+    state.teacherTab = 'overview';
   }
   if(u.role==='admin') state.adminTab = 'overview';
-  if(u.role==='student') state.studentTab = 'grades';
+  if(u.role==='student') state.studentTab = 'overview';
   if(u.role==='student') state.selectedStudentSubjectId = null;
   render();
 }
@@ -240,10 +240,10 @@ function renderShell(mainHTML, role){
       ['classes','Classes & Sections'],['subjects','Subjects / Courses'],['evaluations','Evaluations'],
     ],
     teacher: [
-      ['roster','My Classes'],['post','Post Work'],['attendance','Attendance'],['gradebook','Gradebook'],
+      ['overview','Overview'],['roster','My Classes'],['post','Post Work'],['attendance','Attendance'],['gradebook','Gradebook'],
     ],
     student: [
-      ['grades','My Grades'],['subjects','Subjects / Courses'],['work','Class Work'],
+      ['overview','Overview'],['grades','My Grades'],['subjects','Subjects / Courses'],['work','Class Work'],
     ],
   };
   const activeTab = role==='admin'?state.adminTab: role==='teacher'?state.teacherTab: state.studentTab;
@@ -267,8 +267,31 @@ function renderShell(mainHTML, role){
         <button class="btn btn-ghost btn-sm" id="logout-btn" style="margin-top:12px; width:100%; color:#F6F1E4; border-color:rgba(246,241,228,0.3);">Sign out</button>
       </div>
     </div>
-    <div class="main">${mainHTML}</div>
+    <div class="main">
+      ${role==='teacher'||role==='student' ? renderAccountTools(role) : ''}
+      ${mainHTML}
+    </div>
   </div>`;
+}
+function renderAccountTools(role){
+  const u = state.currentUser;
+  const notifications = notificationsForUser(u, role);
+  return `<div class="account-tools">
+    <button class="tool-btn" data-open-account-modal="notifications" aria-label="Notifications" title="Notifications">&#128276;${notifications.length ? `<span class="notification-count">${notifications.length}</span>` : ''}</button>
+    <button class="tool-btn" data-open-account-modal="messages" aria-label="Messages" title="Messages">&#128172;</button>
+    <button class="profile-btn" data-open-account-modal="profile" title="Profile"><span class="avatar">${esc(initials(u.name))}</span><span class="profile-name">${esc(u.name)}</span></button>
+    <button class="tool-btn settings-btn" data-open-account-modal="settings" aria-label="Account settings" title="Account settings">&#9881;</button>
+  </div>`;
+}
+function initials(name){ return String(name||'?').split(/\s+/).filter(Boolean).slice(0,2).map(part=>part[0]).join('').toUpperCase(); }
+function notificationsForUser(user, role){
+  if(!user) return [];
+  if(role==='student'){
+    const cls = getClass(user.classId);
+    return cls ? db.materials.filter(m=>m.classId===cls.id && m.dueDate).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,5).map(m=>({title:`Due ${fmtDate(m.dueDate)}`, body:m.title})) : [];
+  }
+  const assignments = subjectAssignmentsOfTeacher(user.id);
+  return assignments.length ? [{title:'Teaching assignments', body:`You are assigned to ${assignments.length} subject${assignments.length===1?'':'s'}.`}] : [];
 }
 function attachShellHandlers(){
   const mt = document.getElementById('menu-toggle');
@@ -285,6 +308,7 @@ function attachShellHandlers(){
       render();
     };
   });
+  document.querySelectorAll('[data-open-account-modal]').forEach(btn=>btn.onclick=()=>openModal(btn.dataset.openAccountModal));
 }
 
 /* ======================= ADMIN ======================= */
@@ -362,7 +386,7 @@ function renderAdminTeachers(){
             <td><b>${esc(t.name)}</b></td>
             <td class="mono">${esc(t.username)}</td>
             <td>${cls.length ? cls.map(c=>`<span class="pill pill-gold" style="margin-right:4px;">${classLabel(c)}</span>`).join('') : '<span class="pill pill-slate">None yet</span>'}</td>
-            <td><button class="btn btn-ghost btn-sm" data-remove-teacher="${t.id}">Remove</button></td>
+            <td><button class="btn btn-ghost btn-sm" data-edit-user="${t.id}">Edit</button> <button class="btn btn-ghost btn-sm" data-remove-teacher="${t.id}">Remove</button></td>
           </tr>`;
         }).join('') || `<tr><td colspan="4" class="empty">No teacher accounts yet.</td></tr>`}
       </tbody>
@@ -384,7 +408,7 @@ function renderAdminStudents(){
             <td class="mono">${esc(s.username)}</td>
             <td class="mono">${esc(s.lrn||'—')}</td>
             <td>${cls ? classLabel(cls) : '<span class="pill pill-danger">Not enrolled</span>'}</td>
-            <td><button class="btn btn-ghost btn-sm" data-remove-student="${s.id}">Remove</button></td>
+            <td><button class="btn btn-ghost btn-sm" data-edit-user="${s.id}">Edit</button> <button class="btn btn-ghost btn-sm" data-remove-student="${s.id}">Remove</button></td>
           </tr>`;
         }).join('') || `<tr><td colspan="5" class="empty">No student accounts yet.</td></tr>`}
       </tbody>
@@ -475,6 +499,7 @@ function attachAdminHandlers(){
   const as = document.getElementById('add-student-btn'); if(as) as.onclick = ()=>openModal('addStudent');
   const ac = document.getElementById('add-class-btn'); if(ac) ac.onclick = ()=>openModal('addClass');
   const addSubject = document.getElementById('add-subject-btn'); if(addSubject) addSubject.onclick = ()=>openModal('addSubject');
+  document.querySelectorAll('[data-edit-user]').forEach(btn=>btn.onclick=()=>openModal('editUser', {userId:btn.dataset.editUser}));
   document.querySelectorAll('[data-remove-teacher]').forEach(b=>b.onclick=async ()=>{
     if(!confirm('Remove this teacher account? Their sections will become unassigned.')) return;
     const id = b.dataset.removeTeacher;
@@ -521,9 +546,12 @@ function attachAdminHandlers(){
 function renderTeacherMain(){
   const u = state.currentUser;
   const cls = classesOfTeacher(u.id);
-  if(!cls.length){
+  if(!cls.length && state.teacherTab!=='overview'){
     return `<div class="topbar"><div><h2>My Classes</h2><div class="desc">You have not been assigned a section yet.</div></div></div>
     <div class="card empty"><div class="glyph">📋</div>Once the admin assigns you a grade &amp; section, it will appear here.</div>`;
+  }
+  if(!cls.length){
+    return `<div class="topbar"><div><h2>Overview</h2><div class="desc">Your teaching snapshot</div></div></div>${renderTeacherOverview([])}`;
   }
   if(!state.selectedClassId || !cls.find(c=>c.id===state.selectedClassId)) state.selectedClassId = cls[0].id;
   const activeCls = getClass(state.selectedClassId);
@@ -531,7 +559,8 @@ function renderTeacherMain(){
   if(!state.selectedClassSubjectId || !teacherSubjects.find(cs=>cs.id===state.selectedClassSubjectId)) state.selectedClassSubjectId = teacherSubjects.length ? teacherSubjects[0].id : null;
   const tab = state.teacherTab;
   let body = '';
-  if(tab==='roster') body = renderTeacherRoster(activeCls);
+  if(tab==='overview') body = renderTeacherOverview(cls);
+  else if(tab==='roster') body = renderTeacherRoster(activeCls);
   else if(tab==='post') body = renderTeacherPost(activeCls);
   else if(tab==='attendance') body = renderTeacherAttendance(activeCls);
   else if(tab==='gradebook') body = renderTeacherGradebook(activeCls);
@@ -549,7 +578,23 @@ function renderTeacherMain(){
   ${body}`;
 }
 function tabTitleTeacher(tab){
-  return {roster:'Class Roster', post:'Post Work', attendance:'Attendance', gradebook:'Gradebook'}[tab];
+  return {overview:'Overview', roster:'Class Roster', post:'Post Work', attendance:'Attendance', gradebook:'Gradebook'}[tab];
+}
+function renderTeacherOverview(classes){
+  const teacherId = state.currentUser.id;
+  const assignments = subjectAssignmentsOfTeacher(teacherId);
+  const work = db.materials.filter(m=>assignments.some(cs=>cs.id===m.classSubjectId));
+  const graded = db.grades.filter(g=>work.some(m=>m.id===g.materialId));
+  return `<div class="grid grid-3" style="margin-bottom:24px;">
+    <div class="stat-card"><div class="num mono">${classes.length}</div><div class="label">Classes</div></div>
+    <div class="stat-card"><div class="num mono">${assignments.length}</div><div class="label">Subjects taught</div></div>
+    <div class="stat-card"><div class="num mono">${work.length}</div><div class="label">Work posted</div></div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card"><div class="section-title">My classes</div>${classes.length ? classes.map(cls=>`<button class="class-chip" data-select-class="${cls.id}"><div class="g">${esc(cls.grade)}</div><div class="s">${esc(cls.section)} · ${studentsOfClass(cls.id).length} students</div></button>`).join('') : '<div class="empty">No classes assigned yet.</div>'}</div>
+    <div class="card"><div class="section-title">Subjects taught</div>${assignments.length ? assignments.map(cs=>{ const cls=getClass(cs.classId); const subject=getSubject(cs.subjectId); return `<div class="mat-item"><b>${esc(subject.name)}</b><div class="meta">${cls ? esc(classLabel(cls)) : 'Unknown class'} · ${materialsOfClassSubject(cs.id).length} work items</div></div>`; }).join('') : '<div class="empty">No subjects assigned yet.</div>'}</div>
+  </div>
+  <div class="card" style="margin-top:18px;"><div class="section-title">Grading snapshot</div><div class="desc">${graded.length} score${graded.length===1?'':'s'} recorded across your posted work.</div></div>`;
 }
 function renderTeacherRoster(cls){
   const students = studentsOfClass(cls.id);
@@ -637,7 +682,7 @@ function renderTeacherGradebook(cls){
   </div>`;
 }
 function attachTeacherHandlers(){
-  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; render(); });
+  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.teacherTab = 'roster'; render(); });
   document.querySelectorAll('[data-select-subject]').forEach(b=>b.onclick=()=>{ state.selectedClassSubjectId = b.dataset.selectSubject; render(); });
   const pw = document.getElementById('post-work-btn'); if(pw) pw.onclick=()=>openModal('postWork');
   document.querySelectorAll('[data-remove-mat]').forEach(b=>b.onclick=async ()=>{
@@ -689,13 +734,34 @@ function renderStudentMain(){
   }
   const tab = state.studentTab;
   let body='';
-  if(tab==='grades') body = renderStudentGrades(cls);
+  if(tab==='overview') body = renderStudentOverview(cls);
+  else if(tab==='grades') body = renderStudentGrades(cls);
   else if(tab==='subjects') body = renderStudentSubjects(cls);
   else if(tab==='work') body = renderStudentWork(cls);
   return `<div class="topbar"><div><h2>${tabTitleStudent(tab)}</h2><div class="desc">${classLabel(cls)}</div></div></div>${body}`;
 }
 function tabTitleStudent(tab){
-  return {grades:'My Grades', subjects:'Subjects / Courses', work:'Class Work'}[tab];
+  return {overview:'Overview', grades:'My Grades', subjects:'Subjects / Courses', work:'Class Work'}[tab];
+}
+function renderStudentOverview(cls){
+  const studentId = state.currentUser.id;
+  const assignments = subjectAssignmentsOfClass(cls.id);
+  const work = db.materials.filter(m=>m.classId===cls.id && m.type!=='Handout');
+  const graded = gradesOf(studentId);
+  const attendance = attendanceOf(studentId, cls.id);
+  const pending = work.filter(m=>!graded.some(g=>g.materialId===m.id));
+  const present = attendance.filter(a=>a.status==='present').length;
+  const absent = attendance.filter(a=>a.status==='absent').length;
+  return `<div class="grid grid-3" style="margin-bottom:24px;">
+    <div class="stat-card"><div class="num mono">${assignments.length}</div><div class="label">Subjects</div></div>
+    <div class="stat-card"><div class="num mono">${pending.length}</div><div class="label">Work to do</div></div>
+    <div class="stat-card"><div class="num mono">${present}</div><div class="label">Days present</div></div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card"><div class="section-title">My subjects</div>${assignments.length ? assignments.map(cs=>{ const subject=getSubject(cs.subjectId); const subjectWork=materialsOfClassSubject(cs.id).filter(m=>m.type!=='Handout'); return `<button class="class-chip" data-select-student-subject="${cs.id}"><div class="g">${esc(subject.name)}</div><div class="s">${subjectWork.length} work item${subjectWork.length===1?'':'s'}</div></button>`; }).join('') : '<div class="empty">No subjects assigned yet.</div>'}</div>
+    <div class="card"><div class="section-title">Attendance snapshot</div><div class="grid grid-2"><div class="stat-card"><div class="num mono">${present}</div><div class="label">Present</div></div><div class="stat-card"><div class="num mono">${absent}</div><div class="label">Absent</div></div></div><button class="btn btn-gold" data-nav="subjects" style="margin-top:16px; width:100%;">View subjects &amp; attendance</button></div>
+  </div>
+  <div class="card" style="margin-top:18px;"><div class="section-title">Next work to do</div>${pending.length ? pending.slice().sort((a,b)=>(a.dueDate||'9999').localeCompare(b.dueDate||'9999')).slice(0,5).map(m=>`<div class="mat-item"><div class="row1"><h4>${esc(m.title)}</h4>${typePill(m.type)}</div><div class="meta">${m.dueDate ? `Due ${fmtDate(m.dueDate)}` : 'No due date'}</div></div>`).join('') : '<div class="empty">You are caught up on graded work.</div>'}</div>`;
 }
 function renderStudentGrades(cls){
   const u = state.currentUser;
@@ -789,11 +855,12 @@ function renderStudentWork(cls){
         <div class="desc">${esc(m.description)}</div>
       </div>`).join('')}
     </div>`).join('');
-  const subjectTabs = assignments.length ? `<div class="subject-tabs"><button class="tab-btn ${!state.selectedStudentSubjectId?'active':''}" data-select-student-subject="">All subjects</button>${assignments.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedStudentSubjectId?'active':''}" data-select-student-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : '';
+  const subjectTabs = assignments.length ? `<div class="subject-tabs"><button class="tab-btn ${!state.selectedStudentSubjectId?'active':''}" data-select-work-subject="">All subjects</button>${assignments.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedStudentSubjectId?'active':''}" data-select-work-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : '';
   return subjectTabs + (work || `<div class="card empty"><div class="glyph">📚</div>Your teachers haven't posted any work yet.</div>`);
 }
 function attachStudentHandlers(){
-  document.querySelectorAll('[data-select-student-subject]').forEach(btn=>btn.onclick=()=>{ state.selectedStudentSubjectId = btn.dataset.selectStudentSubject || null; render(); });
+  document.querySelectorAll('[data-select-student-subject]').forEach(btn=>btn.onclick=()=>{ state.selectedStudentSubjectId = btn.dataset.selectStudentSubject || null; state.studentTab = 'subjects'; render(); });
+  document.querySelectorAll('[data-select-work-subject]').forEach(btn=>btn.onclick=()=>{ state.selectedStudentSubjectId = btn.dataset.selectWorkSubject || null; state.studentTab = 'work'; render(); });
 }
 
 /* ======================= MODALS ======================= */
@@ -818,6 +885,11 @@ function renderModal(){
   else if(t==='addSubject') inner = modalAddSubject();
   else if(t==='assignSubject') inner = modalAssignSubject(state.modal.payload.classId);
   else if(t==='postWork') inner = modalPostWork();
+  else if(t==='editUser') inner = modalEditUser(state.modal.payload.userId);
+  else if(t==='notifications') inner = modalNotifications();
+  else if(t==='messages') inner = modalMessages();
+  else if(t==='profile') inner = modalProfile();
+  else if(t==='settings') inner = modalSettings();
   bg.innerHTML = `<div class="modal">${inner}</div>`;
   document.body.appendChild(bg);
   bg.addEventListener('click', (e)=>{ if(e.target===bg) closeModal(); });
@@ -832,6 +904,35 @@ function modalAddTeacher(){
     <div class="field"><label>Temporary password</label><input type="text" id="f-password" required></div>
     <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Create account</button></div>
   </form>`;
+}
+function modalEditUser(userId){
+  const user = getUser(userId);
+  if(!user) return '<h3>Account unavailable</h3><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button>';
+  return `<h3>Edit ${user.role} account</h3>
+  <form id="modal-form">
+    <input type="hidden" id="f-user-id" value="${esc(user.id)}">
+    <div class="field"><label>Full name</label><input type="text" id="f-name" value="${esc(user.name)}" required></div>
+    <div class="field"><label>School email</label><input type="email" id="f-email" value="${esc(user.email||'')}" required></div>
+    <div class="field"><label>Username</label><input type="text" id="f-username" value="${esc(user.username)}" required></div>
+    ${user.role==='student' ? `<div class="field"><label>LRN (optional)</label><input type="text" id="f-lrn" value="${esc(user.lrn||'')}"></div><div class="field"><label>Enroll in section</label><select id="f-class"><option value="">— Not yet enrolled —</option>${db.classes.map(c=>`<option value="${c.id}" ${c.id===user.classId?'selected':''}>${esc(classLabel(c))}</option>`).join('')}</select></div>` : ''}
+    <div class="field"><label>New password (optional)</label><input type="text" id="f-password" placeholder="Leave blank to keep current password"></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save changes</button></div>
+  </form>`;
+}
+function modalNotifications(){
+  const items = notificationsForUser(state.currentUser, state.view);
+  return `<h3>Notifications</h3>${items.length ? items.map(item=>`<div class="notification-item"><b>${esc(item.title)}</b><div>${esc(item.body)}</div></div>`).join('') : '<div class="empty">You have no new notifications.</div>'}<div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
+}
+function modalMessages(){
+  return `<h3>Messages</h3><div class="empty"><div class="glyph">&#128172;</div>No messages yet.</div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
+}
+function modalProfile(){
+  const user = state.currentUser;
+  return `<h3>Profile</h3><div class="profile-modal"><span class="avatar avatar-large">${esc(initials(user.name))}</span><b>${esc(user.name)}</b><span class="meta">${esc(user.email||user.username)} · ${esc(user.role)}</span></div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
+}
+function modalSettings(){
+  const user = state.currentUser;
+  return `<h3>Account settings</h3><form id="modal-form"><div class="field"><label>Display name</label><input type="text" id="f-settings-name" value="${esc(user.name)}" required></div><div class="field"><label>School email</label><input type="email" id="f-settings-email" value="${esc(user.email||'')}" required></div><div class="field"><label>New password (optional)</label><input type="text" id="f-settings-password" placeholder="Leave blank to keep current password"></div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save settings</button></div></form>`;
 }
 function modalAddStudent(){
   return `<h3>New student account</h3>
@@ -894,7 +995,33 @@ function attachModalHandlers(type){
   if(!form) return;
   form.onsubmit = async (e)=>{
     e.preventDefault();
-    if(type==='addTeacher'){
+    if(type==='editUser'){
+      const user = getUser(document.getElementById('f-user-id').value);
+      if(!user) return;
+      const name = document.getElementById('f-name').value.trim();
+      const email = document.getElementById('f-email').value.trim().toLowerCase();
+      const username = document.getElementById('f-username').value.trim();
+      const duplicate = db.users.some(other=>other.id!==user.id && (other.username.toLowerCase()===username.toLowerCase() || (other.email||'').toLowerCase()===email));
+      if(duplicate){ alert('That username or email is already taken.'); return; }
+      user.name = name; user.email = email; user.username = username;
+      if(user.role==='student'){
+        user.lrn = document.getElementById('f-lrn').value.trim();
+        user.classId = document.getElementById('f-class').value;
+      }
+      const password = document.getElementById('f-password').value;
+      if(password) user.password = password;
+      await saveDB(); closeModal(); showToast('Account updated.');
+    } else if(type==='settings'){
+      const user = state.currentUser;
+      const email = document.getElementById('f-settings-email').value.trim().toLowerCase();
+      const duplicate = db.users.some(other=>other.id!==user.id && (other.email||'').toLowerCase()===email);
+      if(duplicate){ alert('That email is already taken.'); return; }
+      user.name = document.getElementById('f-settings-name').value.trim();
+      user.email = email;
+      const password = document.getElementById('f-settings-password').value;
+      if(password) user.password = password;
+      await saveDB(); closeModal(); showToast('Settings updated.');
+    } else if(type==='addTeacher'){
       const name = document.getElementById('f-name').value.trim();
       const email = document.getElementById('f-email').value.trim().toLowerCase();
       const username = document.getElementById('f-username').value.trim();
