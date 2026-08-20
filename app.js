@@ -60,6 +60,7 @@ function defaultDB(){
     attendance: [],
     grades: [],
     messages: [],
+    submissions: [],
   };
 }
 
@@ -91,6 +92,7 @@ function normalizeDB(data){
   data.messages = Array.isArray(data.messages) ? data.messages : [];
   data.subjects = Array.isArray(data.subjects) ? data.subjects : [];
   data.classSubjects = Array.isArray(data.classSubjects) ? data.classSubjects : [];
+  data.submissions = Array.isArray(data.submissions) ? data.submissions : [];
   const exampleUsernames = new Set(['teacher1','teacher2','student1','student2','student3','student4']);
   const removedUserIds = new Set(data.users.filter(user=>exampleUsernames.has(user.username)).map(user=>user.id));
   data.users = data.users.filter(user=>!exampleUsernames.has(user.username));
@@ -103,6 +105,7 @@ function normalizeDB(data){
   data.materials = data.materials.filter(material=>!removedMaterialIds.has(material.id));
   data.attendance = data.attendance.filter(record=>!removedClassIds.has(record.classId));
   data.grades = data.grades.filter(grade=>!removedClassIds.has(grade.classId) && !removedUserIds.has(grade.studentId) && !removedMaterialIds.has(grade.materialId));
+  data.submissions = data.submissions.filter(sub=>!removedUserIds.has(sub.studentId) && !removedMaterialIds.has(sub.materialId));
   data.users.forEach(user=>{
     if(!user.email) user.email = user.username || '';
   });
@@ -158,6 +161,8 @@ function studentsOfClass(classId){ return db.users.filter(u=>u.role==='student' 
 function materialsOfClass(classId){ return db.materials.filter(m=>m.classId===classId).sort((a,b)=> (b.postedAt||'').localeCompare(a.postedAt||'')); }
 function materialsOfClassSubject(classSubjectId){ return db.materials.filter(m=>m.classSubjectId===classSubjectId).sort((a,b)=> (b.postedAt||'').localeCompare(a.postedAt||'')); }
 function gradesOf(studentId){ return db.grades.filter(g=>g.studentId===studentId); }
+function submissionFor(materialId, studentId){ return db.submissions.find(s=>s.materialId===materialId && s.studentId===studentId); }
+function submissionsOfMaterial(materialId){ return db.submissions.filter(s=>s.materialId===materialId); }
  function attendanceOf(studentId, classId, classSubjectId){
    const subjectRecords = db.attendance.filter(a=>a.classId===classId && a.classSubjectId===classSubjectId);
    const records = subjectRecords.length ? subjectRecords : db.attendance.filter(a=>a.classId===classId && !a.classSubjectId);
@@ -173,6 +178,14 @@ function fmtFileSize(bytes){
   if(bytes < 1024) return bytes + ' B';
   if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
   return (bytes/1024/1024).toFixed(1) + ' MB';
+}
+function submitWorkBlock(m){
+  if(!m.allowOnlineSubmission) return '';
+  const sub = submissionFor(m.id, state.currentUser.id);
+  return `<div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    ${sub ? `<span class="pill pill-success">Submitted ${fmtDate((sub.submittedAt||'').slice(0,10))}</span>` : ''}
+    <button type="button" class="btn ${sub?'btn-ghost':'btn-gold'} btn-sm" data-submit-work="${m.id}">${sub ? 'Update submission' : 'Submit file'}</button>
+  </div>`;
 }
 function attachmentsHtml(material){
   const files = Array.isArray(material.attachments) ? material.attachments : [];
@@ -688,7 +701,10 @@ function renderTeacherPost(cls){
       <div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:''}</div>
       <div class="desc">${esc(m.description)}</div>
       ${attachmentsHtml(m)}
-      <div style="margin-top:10px;"><button class="btn btn-ghost btn-sm" data-remove-mat="${m.id}">Remove</button></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        ${m.allowOnlineSubmission ? `<button type="button" class="btn btn-gold btn-sm" data-view-submissions="${m.id}">View submissions (${submissionsOfMaterial(m.id).length}/${studentsOfClass(cls.id).length})</button>` : ''}
+        <button class="btn btn-ghost btn-sm" data-remove-mat="${m.id}">Remove</button>
+      </div>
     </div>
   `).join('') : `<div class="card empty"><div class="glyph">🗂️</div>Nothing posted to this section yet.</div>`}
   `;
@@ -754,9 +770,13 @@ function attachTeacherHandlers(){
   document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.teacherTab = 'roster'; render(); });
   document.querySelectorAll('[data-select-subject]').forEach(b=>b.onclick=()=>{ state.selectedClassSubjectId = b.dataset.selectSubject; render(); });
   const pw = document.getElementById('post-work-btn'); if(pw) pw.onclick=()=>openModal('postWork');
+  document.querySelectorAll('[data-view-submissions]').forEach(b=>b.onclick=()=>openModal('viewSubmissions', {materialId: b.dataset.viewSubmissions}));
   document.querySelectorAll('[data-remove-mat]').forEach(b=>b.onclick=async ()=>{
-    if(!confirm('Remove this posted work?')) return;
-    db.materials = db.materials.filter(m=>m.id!==b.dataset.removeMat);
+    if(!confirm('Remove this posted work? This also removes any student submissions and recorded scores for it.')) return;
+    const matId = b.dataset.removeMat;
+    db.materials = db.materials.filter(m=>m.id!==matId);
+    db.submissions = db.submissions.filter(s=>s.materialId!==matId);
+    db.grades = db.grades.filter(g=>g.materialId!==matId);
     await saveDB(); showToast('Removed.'); render();
   });
   document.querySelectorAll('[data-att]').forEach(b=>b.onclick=()=>{
@@ -876,7 +896,7 @@ function renderStudentSubjects(cls){
   </div>
   <div class="card" style="margin-bottom:18px;">
     <div class="section-title">Work to do</div>
-    ${materials.length ? materials.map(m=>`<div class="mat-item"><div class="row1"><h4>${esc(m.title)}</h4>${typePill(m.type)}</div><div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:'· No due date'}</div><div class="desc">${esc(m.description)}</div>${attachmentsHtml(m)}</div>`).join('') : '<div class="empty">No assignments, quizzes, projects, or handouts yet.</div>'}
+    ${materials.length ? materials.map(m=>`<div class="mat-item"><div class="row1"><h4>${esc(m.title)}</h4>${typePill(m.type)}</div><div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:'· No due date'}</div><div class="desc">${esc(m.description)}</div>${attachmentsHtml(m)}${submitWorkBlock(m)}</div>`).join('') : '<div class="empty">No assignments, quizzes, projects, or handouts yet.</div>'}
   </div>
   <div class="card">
     <div class="section-title">Attendance for ${esc(subject.name)}</div>
@@ -923,6 +943,7 @@ function renderStudentWork(cls){
         <div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:'· No due date'}</div>
         <div class="desc">${esc(m.description)}</div>
         ${attachmentsHtml(m)}
+        ${submitWorkBlock(m)}
       </div>`).join('')}
     </div>`).join('');
   const subjectTabs = assignments.length ? `<div class="subject-tabs"><button class="tab-btn ${!state.selectedStudentSubjectId?'active':''}" data-select-work-subject="">All subjects</button>${assignments.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedStudentSubjectId?'active':''}" data-select-work-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : '';
@@ -931,6 +952,7 @@ function renderStudentWork(cls){
 function attachStudentHandlers(){
   document.querySelectorAll('[data-select-student-subject]').forEach(btn=>btn.onclick=()=>{ state.selectedStudentSubjectId = btn.dataset.selectStudentSubject || null; state.studentTab = 'subjects'; render(); });
   document.querySelectorAll('[data-select-work-subject]').forEach(btn=>btn.onclick=()=>{ state.selectedStudentSubjectId = btn.dataset.selectWorkSubject || null; state.studentTab = 'work'; render(); });
+  document.querySelectorAll('[data-submit-work]').forEach(btn=>btn.onclick=()=>openModal('submitWork', {materialId: btn.dataset.submitWork}));
 }
 
 /* ======================= MODALS ======================= */
@@ -959,6 +981,8 @@ function renderModal(){
   else if(t==='addSubject') inner = modalAddSubject();
   else if(t==='assignSubject') inner = modalAssignSubject(state.modal.payload.classId);
   else if(t==='postWork') inner = modalPostWork();
+  else if(t==='submitWork') inner = modalSubmitWork(state.modal.payload.materialId);
+  else if(t==='viewSubmissions') inner = modalViewSubmissions(state.modal.payload.materialId);
   else if(t==='editUser') inner = modalEditUser(state.modal.payload.userId);
   else if(t==='notifications') inner = modalNotifications();
   else if(t==='messages') inner = modalMessagesEnhanced();
@@ -1104,8 +1128,49 @@ function modalPostWork(){
     <div class="field"><label>Instructions / description</label><textarea id="f-desc"></textarea></div>
     <div class="field"><label>Due date (optional)</label><input type="date" id="f-due"></div>
     <div class="field"><label>Attach files (optional)</label><input type="file" id="f-files" multiple><div class="helper">Attach handouts, worksheets, or references (roughly 4MB total).</div></div>
+    <div class="field"><label class="check-row"><input type="checkbox" id="f-allow-submit"> Allow students to submit their work online</label></div>
     <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold" id="post-work-submit">Post to class</button></div>
   </form>`;
+}
+function modalSubmitWork(materialId){
+  const material = db.materials.find(m=>m.id===materialId);
+  if(!material) return '<h3>Work unavailable</h3><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button>';
+  const existing = submissionFor(materialId, state.currentUser.id);
+  return `<h3>Submit — ${esc(material.title)}</h3>
+  <div class="helper" style="margin-bottom:14px;">${material.dueDate ? `Due ${fmtDate(material.dueDate)}` : 'No due date set.'}</div>
+  <form id="modal-form">
+    <div class="field"><label>Notes / answer (optional)</label><textarea id="f-submit-text">${esc(existing ? (existing.textAnswer||'') : '')}</textarea></div>
+    <div class="field"><label>Attach your file${existing && existing.fileName ? ' (optional — replaces current file)' : ' (optional)'}</label><input type="file" id="f-submit-file"><div class="helper">${existing && existing.fileName ? `Currently attached: ${esc(existing.fileName)}.` : 'Roughly 4MB max.'}</div></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold" id="submit-work-submit">${existing ? 'Update submission' : 'Submit'}</button></div>
+  </form>`;
+}
+function modalViewSubmissions(materialId){
+  const material = db.materials.find(m=>m.id===materialId);
+  if(!material) return '<h3>Work unavailable</h3><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button>';
+  const cls = getClass(material.classId);
+  const students = cls ? studentsOfClass(cls.id) : [];
+  const rows = students.map(s=>{
+    const sub = submissionFor(materialId, s.id);
+    const grade = db.grades.find(g=>g.studentId===s.id && g.materialId===materialId);
+    return `<div class="mat-item" data-sub-row="${s.id}">
+      <div class="row1"><h4>${esc(s.name)}</h4>${sub ? '<span class="pill pill-success">Submitted</span>' : '<span class="pill pill-slate">Not submitted</span>'}</div>
+      ${sub ? `
+        <div class="meta">Submitted ${fmtDate((sub.submittedAt||'').slice(0,10))}</div>
+        <button type="button" class="btn btn-ghost btn-sm" data-toggle-answer="${s.id}">View answer</button>
+        <div class="desc" style="display:none; margin-top:10px;" id="answer-${s.id}">
+          ${sub.textAnswer ? `<div style="margin-bottom:8px; white-space:pre-wrap;">${esc(sub.textAnswer)}</div>` : ''}
+          ${sub.fileName ? `<a class="attachment-chip" href="${esc(sub.fileDataUrl)}" download="${esc(sub.fileName)}">📎 ${esc(sub.fileName)}${sub.fileSize!==undefined?` <span>(${fmtFileSize(sub.fileSize)})</span>`:''}</a>` : ''}
+          ${!sub.textAnswer && !sub.fileName ? '<div class="empty">No answer content.</div>' : ''}
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+          <input class="score-input" type="number" min="0" max="10" placeholder="—" value="${grade?grade.score:''}" data-submission-score="${s.id}"> / 10
+          <button type="button" class="btn btn-gold btn-sm" data-record-score="${s.id}">Record</button>
+          ${grade ? '<span class="pill pill-success">Recorded to gradebook</span>' : ''}
+        </div>
+      ` : `<div class="meta">Waiting for the student to submit.</div>`}
+    </div>`;
+  }).join('');
+  return `<h3>Submissions — ${esc(material.title)}</h3>${rows || '<div class="empty">No students enrolled in this section yet.</div>'}<div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
 }
 function readFileAsDataUrl(file){
   return new Promise((resolve, reject)=>{
@@ -1117,6 +1182,33 @@ function readFileAsDataUrl(file){
 }
 function attachModalHandlers(type){
   const cancel = document.getElementById('modal-cancel'); if(cancel) cancel.onclick = closeModal;
+  if(type==='viewSubmissions'){
+    document.querySelectorAll('[data-toggle-answer]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const el = document.getElementById('answer-'+btn.dataset.toggleAnswer);
+        if(el) el.style.display = (el.style.display==='none' || !el.style.display) ? 'block' : 'none';
+      };
+    });
+    document.querySelectorAll('[data-record-score]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const sid = btn.dataset.recordScore;
+        const materialId = state.modal.payload.materialId;
+        const input = document.querySelector(`[data-submission-score="${sid}"]`);
+        const val = input ? input.value : '';
+        if(val===''){ alert('Enter a score first.'); return; }
+        const score = Math.max(0, Math.min(10, Number(val)));
+        const material = db.materials.find(m=>m.id===materialId);
+        if(!material) return;
+        let g = db.grades.find(x=>x.studentId===sid && x.materialId===materialId);
+        if(!g){ g = { id: uid('g'), classId: material.classId, studentId: sid, materialId, score, maxScore:10 }; db.grades.push(g); }
+        else g.score = score;
+        await saveDB();
+        showToast('Score recorded to gradebook.');
+        renderModal();
+      };
+    });
+    return;
+  }
   const form = document.getElementById('modal-form');
   if(!form) return;
   form.onsubmit = async (e)=>{
@@ -1220,8 +1312,46 @@ function attachModalHandlers(type){
         if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Post to class'; }
         return;
       }
-      db.materials.push({ id: uid('m'), classId: state.selectedClassId, classSubjectId, type:mtype, title, description, dueDate, postedAt: new Date().toISOString().slice(0,10), attachments });
+      const allowOnlineSubmission = document.getElementById('f-allow-submit').checked;
+      db.materials.push({ id: uid('m'), classId: state.selectedClassId, classSubjectId, type:mtype, title, description, dueDate, allowOnlineSubmission, postedAt: new Date().toISOString().slice(0,10), attachments });
       await saveDB(); closeModal(); showToast('Posted to class.');
+    } else if(type==='submitWork'){
+      const materialId = state.modal.payload.materialId;
+      const material = db.materials.find(m=>m.id===materialId);
+      if(!material){ closeModal(); return; }
+      const textAnswer = document.getElementById('f-submit-text').value.trim();
+      const fileInput = document.getElementById('f-submit-file');
+      const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+      const existing = submissionFor(materialId, state.currentUser.id);
+      if(!textAnswer && !file && !(existing && existing.fileName)){
+        alert('Add a note or attach a file before submitting.');
+        return;
+      }
+      if(file && file.size > 4 * 1024 * 1024){
+        alert('That file is too large (about ' + fmtFileSize(file.size) + '). Please keep it under ~4MB.');
+        return;
+      }
+      const submitBtn = document.getElementById('submit-work-submit');
+      if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Submitting…'; }
+      let fileData = existing ? { fileName: existing.fileName||'', fileSize: existing.fileSize, fileMimeType: existing.fileMimeType||'', fileDataUrl: existing.fileDataUrl||'' } : { fileName:'', fileSize:undefined, fileMimeType:'', fileDataUrl:'' };
+      if(file){
+        try{
+          fileData = { fileName: file.name, fileSize: file.size, fileMimeType: file.type, fileDataUrl: await readFileAsDataUrl(file) };
+        }catch(err){
+          console.error('submission file read failed', err);
+          alert('That file could not be read. Please try again.');
+          if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = existing?'Update submission':'Submit'; }
+          return;
+        }
+      }
+      if(existing){
+        existing.textAnswer = textAnswer;
+        Object.assign(existing, fileData);
+        existing.submittedAt = new Date().toISOString();
+      }else{
+        db.submissions.push({ id: uid('sub'), materialId, studentId: state.currentUser.id, textAnswer, ...fileData, submittedAt: new Date().toISOString() });
+      }
+      await saveDB(); closeModal(); showToast('Work submitted.');
     } else if(type==='addSubject'){
       const name = document.getElementById('f-subject-name').value.trim();
       const code = document.getElementById('f-subject-code').value.trim().toUpperCase();
