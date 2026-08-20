@@ -1,13 +1,19 @@
 /* =======================================================================
    Dr. Francisco L. Calingasan Memorial Colleges Foundation Inc. — Portal
-   Single-file prototype: client-side app backed by shared window.storage
+   Single-file app: client-side UI backed by a Supabase table (app_state)
+   holding the whole DB as one JSON blob — see SUPABASE_SETUP.sql
    ======================================================================= */
 
 const SCHOOL_NAME = "Dr. Francisco L. Calingasan Memorial Colleges Foundation Inc.";
 const DB_KEY = "DFLC_school_db_v1";
 const SCHOOL_LOGO_SRC = "LOGO.jpg";
 
-let db = null;
+const SUPABASE_URL = "https://wcowyknjsjellpcubsam.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_FYjHNYr3EUAnJeV03Ibu9g_f4BmX7EX";
+const APP_STATE_TABLE = "app_state"; // single row/column JSON store, see SQL setup notes
+
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
 let toastTimer = null;
 let state = {
   currentUser: null,
@@ -59,11 +65,20 @@ function defaultDB(){
 
 async function loadDB(){
   try{
-    const res = window.storage
-      ? await window.storage.get(DB_KEY, true)
-      : { value: localStorage.getItem(DB_KEY) };
-    if(res && res.value){ db = normalizeDB(JSON.parse(res.value)); ensureStudentLrns(); await saveDB(); return; }
-  }catch(e){ /* not found yet */ }
+    const { data, error } = await supabaseClient
+      .from(APP_STATE_TABLE)
+      .select('value')
+      .eq('key', DB_KEY)
+      .maybeSingle();
+    if(error) throw error;
+    if(data && data.value){ db = normalizeDB(data.value); ensureStudentLrns(); await saveDB(); return; }
+  }catch(e){
+    console.error('loadDB (supabase) failed, falling back to local copy', e);
+    try{
+      const cached = localStorage.getItem(DB_KEY);
+      if(cached){ db = normalizeDB(JSON.parse(cached)); ensureStudentLrns(); return; }
+    }catch(e2){ /* ignore */ }
+  }
   db = defaultDB();
   await saveDB();
 }
@@ -107,16 +122,16 @@ function normalizeDB(data){
   return data;
 }
 async function saveDB(){
-  const value = JSON.stringify(db);
   try{
-    if(window.storage) await window.storage.set(DB_KEY, value, true);
-    else localStorage.setItem(DB_KEY, value);
+    localStorage.setItem(DB_KEY, JSON.stringify(db)); // quick local fallback/cache
+  }catch(e){ /* ignore quota errors */ }
+  try{
+    const { error } = await supabaseClient
+      .from(APP_STATE_TABLE)
+      .upsert({ key: DB_KEY, value: db, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if(error) throw error;
   }catch(e){
-    try{
-      localStorage.setItem(DB_KEY, value);
-    }catch(fallbackError){
-      console.error('storage save failed', fallbackError);
-    }
+    console.error('saveDB (supabase) failed — changes only saved locally for now', e);
   }
 }
 function showToast(msg){
