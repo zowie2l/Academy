@@ -307,6 +307,7 @@ function renderShell(mainHTML, role){
   return `
   <div class="shell">
     <button class="menu-toggle" id="menu-toggle">☰ Menu</button>
+    <div class="sidebar-backdrop ${state.sidebarOpen?'open':''}" id="sidebar-backdrop"></div>
     <div class="sidebar ${state.sidebarOpen?'open':''}" id="sidebar">
       <div class="sidebar-brand">
         ${schoolLogo(42)}
@@ -377,6 +378,8 @@ async function markNotificationsRead(){
 function attachShellHandlers(){
   const mt = document.getElementById('menu-toggle');
   if(mt) mt.onclick = ()=>{ state.sidebarOpen = !state.sidebarOpen; render(); };
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if(backdrop) backdrop.onclick = ()=>{ state.sidebarOpen = false; render(); };
   const lo = document.getElementById('logout-btn');
   if(lo) lo.onclick = logout;
   document.querySelectorAll('[data-nav]').forEach(btn=>{
@@ -650,7 +653,7 @@ function renderTeacherMain(){
   <div class="topbar">
     <div><h2>${tabTitleTeacher(tab)}</h2><div class="desc">Handling ${classLabel(activeCls)}</div></div>
   </div>
-  <div class="grid" style="grid-template-columns:repeat(${Math.min(cls.length,4)},1fr); margin-bottom:24px;">
+  <div class="grid class-chip-grid" style="--chip-cols:${Math.min(cls.length,4)}; margin-bottom:24px;">
     ${cls.map(c=>`<button class="class-chip ${c.id===state.selectedClassId?'active':''}" data-select-class="${c.id}">
       <div class="g">${esc(c.grade)}</div><div class="s">${esc(c.section)} · ${studentsOfClass(c.id).length} students</div>
     </button>`).join('')}
