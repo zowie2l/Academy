@@ -17,7 +17,7 @@
     --shadow: 0 8px 24px rgba(15,32,56,0.10);
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;padding:0;height:100%;}
+  html,body{margin:0;padding:0;height:100%; overflow-x:hidden; width:100%;}
   body{
     font-family:'Source Sans 3', sans-serif;
     background:var(--parchment);
@@ -126,7 +126,7 @@
   .topbar h2{font-size:1.5rem; color:var(--ink-navy);}
   .topbar .desc{color:var(--slate); font-size:0.9rem; margin-top:5px;}
 
-  .card{background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow);}
+  .card{background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow); overflow-x:auto;}
   .grid{display:grid; gap:18px;}
   .grid-3{grid-template-columns:repeat(3,1fr);}
   .grid-2{grid-template-columns:repeat(2,1fr);}
@@ -136,7 +136,8 @@
   .stat-card .num{font-family:'Fraunces',serif; font-size:2rem; color:var(--ink-navy);}
   .stat-card .label{font-size:0.78rem; text-transform:uppercase; letter-spacing:0.6px; color:var(--slate); margin-top:4px;}
 
-  table{width:100%; border-collapse:collapse; font-size:0.88rem;}
+  table{width:100%; min-width:480px; border-collapse:collapse; font-size:0.88rem;}
+  @media (max-width:600px){ table{min-width:420px; font-size:0.82rem;} thead th, tbody td{padding:8px 9px;} }
   thead th{text-align:left; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.5px; color:var(--slate); padding:10px 12px; border-bottom:2px solid var(--ink-navy);}
   tbody td{padding:11px 12px; border-bottom:1px solid var(--line);}
   tbody tr:hover{background:#F3EDDD;}
@@ -163,9 +164,9 @@
   .class-chip .s{font-size:0.78rem; color:var(--slate); margin-top:2px;}
   .subject-tabs{display:flex; gap:8px; flex-wrap:wrap; margin:-8px 0 22px; border-bottom:1px solid var(--line);}
   .assignment-list{display:grid; gap:7px; margin-bottom:8px; min-width:230px;}
-  .assignment-row{display:flex; align-items:center; gap:8px; justify-content:space-between;}
+  .assignment-row{display:flex; align-items:center; gap:8px; justify-content:space-between; flex-wrap:wrap;}
   .assignment-row span{font-weight:600;}
-  .assignment-row select{width:auto; min-width:145px; padding:6px 8px; font-size:0.78rem;}
+  .assignment-row select{width:auto; min-width:145px; padding:6px 8px; font-size:0.78rem; flex:1 1 145px;}
 
   /* ---------- Modal ---------- */
   .modal-bg{position:fixed; inset:0; background:rgba(10,23,40,0.55); display:flex; align-items:center; justify-content:center; z-index:100; padding:20px;}
@@ -183,7 +184,11 @@
   .mat-item .meta{font-size:0.78rem; color:var(--slate); margin-top:4px;}
   .mat-item .desc{font-size:0.87rem; color:var(--ink); margin-top:9px; line-height:1.55;}
 
-  .att-grid{display:grid; grid-template-columns: 1fr repeat(3, 100px); gap:6px; align-items:center;}
+  .att-grid{display:grid; grid-template-columns: 1fr repeat(3, 100px); gap:6px; align-items:center; min-width:340px;}
+  @media (max-width:480px){
+    .att-grid{grid-template-columns: 1fr repeat(3, 58px); gap:4px; min-width:0;}
+    .att-btn{padding:6px 0; font-size:0.68rem;}
+  }
   .att-head{font-size:0.72rem; text-transform:uppercase; color:var(--slate); letter-spacing:0.5px; padding-bottom:8px;}
   .att-toggle{display:flex; gap:4px;}
   .att-btn{flex:1; padding:7px 0; border:1.5px solid var(--line); background:var(--paper); border-radius:6px; font-size:0.72rem; font-weight:700; color:var(--slate);}
