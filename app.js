@@ -5,6 +5,7 @@
 
 const SCHOOL_NAME = "Dr. Francisco L. Calingasan Memorial Colleges Foundation Inc.";
 const DB_KEY = "DFLC_school_db_v1";
+const SCHOOL_LOGO_SRC = "LOGO.jpg";
 
 let db = null;
 let toastTimer = null;
@@ -25,11 +26,26 @@ let state = {
 };
 
 function uid(prefix){ return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+function lrnExists(lrn, exceptUserId){
+  return db.users.some(user=>user.id!==exceptUserId && String(user.lrn||'')===String(lrn));
+}
+function generateUniqueLrn(exceptUserId){
+  let lrn = '';
+  do{
+    lrn = String(Math.floor(100000000000 + Math.random() * 900000000000));
+  }while(lrnExists(lrn, exceptUserId));
+  return lrn;
+}
+function ensureStudentLrns(){
+  db.users.filter(user=>user.role==='student' && !user.lrn).forEach(user=>{
+    user.lrn = generateUniqueLrn(user.id);
+  });
+}
 
 function defaultDB(){
   return {
     users: [
-      { id: uid('u'), role:'admin', username:'admin', email:'admin@flc.edu', password:'admin123', name:'Registrar Office' },
+      { id: uid('u'), role:'admin', username:'123', email:'123', password:'123', name:'ADMIN' },
     ],
     classes: [],
     subjects: [],
@@ -37,6 +53,7 @@ function defaultDB(){
     materials: [],
     attendance: [],
     grades: [],
+    messages: [],
   };
 }
 
@@ -45,7 +62,7 @@ async function loadDB(){
     const res = window.storage
       ? await window.storage.get(DB_KEY, true)
       : { value: localStorage.getItem(DB_KEY) };
-    if(res && res.value){ db = normalizeDB(JSON.parse(res.value)); await saveDB(); return; }
+    if(res && res.value){ db = normalizeDB(JSON.parse(res.value)); ensureStudentLrns(); await saveDB(); return; }
   }catch(e){ /* not found yet */ }
   db = defaultDB();
   await saveDB();
@@ -56,6 +73,7 @@ function normalizeDB(data){
   data.materials = Array.isArray(data.materials) ? data.materials : [];
   data.attendance = Array.isArray(data.attendance) ? data.attendance : [];
   data.grades = Array.isArray(data.grades) ? data.grades : [];
+  data.messages = Array.isArray(data.messages) ? data.messages : [];
   data.subjects = Array.isArray(data.subjects) ? data.subjects : [];
   data.classSubjects = Array.isArray(data.classSubjects) ? data.classSubjects : [];
   const exampleUsernames = new Set(['teacher1','teacher2','student1','student2','student3','student4']);
@@ -71,10 +89,21 @@ function normalizeDB(data){
   data.attendance = data.attendance.filter(record=>!removedClassIds.has(record.classId));
   data.grades = data.grades.filter(grade=>!removedClassIds.has(grade.classId) && !removedUserIds.has(grade.studentId) && !removedMaterialIds.has(grade.materialId));
   data.users.forEach(user=>{
-    if(!user.email) user.email = ({
-      admin:'admin@flc.edu',
-    })[user.username] || '';
+    if(!user.email) user.email = user.username || '';
   });
+
+  // --- Safeguard: guarantee the default admin login (123 / 123) always works,
+  // even if a previously saved database has different/missing admin credentials.
+  let admin = data.users.find(user=>user.role==='admin');
+  if(!admin){
+    data.users.push({ id: uid('u'), role:'admin', username:'123', email:'123', password:'123', name:'ADMIN' });
+  }else{
+    admin.username = '123';
+    admin.email = '123';
+    admin.password = '123';
+    if(!admin.name) admin.name = 'ADMIN';
+  }
+
   return data;
 }
 async function saveDB(){
@@ -124,21 +153,23 @@ function typePill(type){
   const map = {Assignment:'pill-gold', Quiz:'pill-maroon', Project:'pill-slate', Handout:'pill-success'};
   return `<span class="pill ${map[type]||'pill-slate'}">${esc(type)}</span>`;
 }
+function fmtFileSize(bytes){
+  if(bytes===undefined || bytes===null) return '';
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1024/1024).toFixed(1) + ' MB';
+}
+function attachmentsHtml(material){
+  const files = Array.isArray(material.attachments) ? material.attachments : [];
+  if(!files.length) return '';
+  return `<div class="attachment-list">${files.map(f=>`<a class="attachment-chip" href="${esc(f.dataUrl)}" download="${esc(f.name)}" title="Download ${esc(f.name)}">📎 ${esc(f.name)}${f.size!==undefined?` <span>(${fmtFileSize(f.size)})</span>`:''}</a>`).join('')}</div>`;
+}
 
-/* ---------------------- seal svg ---------------------- */
-function sealSVG(size){
+/* ---------------------- school logo ---------------------- */
+function schoolLogo(size, className){
   size = size || 110;
-  return `<svg class="seal" width="${size}" height="${size}" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="60" cy="60" r="57" fill="none" stroke="#C79A3D" stroke-width="1.4"/>
-    <circle cx="60" cy="60" r="49" fill="none" stroke="#C79A3D" stroke-width="1"/>
-    <circle cx="60" cy="60" r="34" fill="none" stroke="#C79A3D" stroke-width="0.8"/>
-    <text class="seal-ring-text" text-anchor="middle">
-      <textPath href="#ringpath" startOffset="50%">DFLC MEMORIAL COLLEGES FOUNDATION</textPath>
-    </text>
-    <path id="ringpath" d="M 60 8 A 52 52 0 1 1 59.9 8" fill="none"/>
-    <text x="60" y="55" text-anchor="middle" font-family="Fraunces, serif" font-size="26" fill="#F6F1E4" font-weight="600">DFLC</text>
-    <text x="60" y="72" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="6.5" fill="#C79A3D" letter-spacing="1.5">EST. IN LEARNING</text>
-  </svg>`;
+  const classes = ['school-logo', className].filter(Boolean).join(' ');
+  return `<img class="${classes}" src="${SCHOOL_LOGO_SRC}" style="--logo-size:${size}px;" width="${size}" height="${size}" alt="${esc(SCHOOL_NAME)} seal">`;
 }
 
 /* ---------------------- auth ---------------------- */
@@ -189,13 +220,14 @@ function renderLogin(){
   return `
   <div class="login-wrap">
     <div class="login-visual">
-      ${sealSVG(150)}
+      ${schoolLogo(150, 'school-logo-lg')}
       <div class="eyebrow">Foundation Portal</div>
       <h1>${esc(SCHOOL_NAME)}</h1>
       <p>One portal for the registrar's office, the faculty, and every learner — enrollment, class records, attendance, and evaluation, kept in one place.</p>
     </div>
     <div class="login-panel">
       <div class="login-card">
+        <div class="login-card-logo">${schoolLogo(82)}</div>
         <div class="eyebrow">Sign in</div>
         <h2>Welcome back</h2>
         <div class="sub">Sign in with your username or school email. Your account type will open automatically.</div>
@@ -211,9 +243,6 @@ function renderLogin(){
           </div>
           <button type="submit" class="btn btn-primary">Sign in</button>
         </form>
-        <div class="demo-box">
-          <b>Demo accounts</b><br>
-          Admin — admin@flc.edu / admin123
         </div>
       </div>
     </div>
@@ -252,7 +281,7 @@ function renderShell(mainHTML, role){
     <button class="menu-toggle" id="menu-toggle">☰ Menu</button>
     <div class="sidebar ${state.sidebarOpen?'open':''}" id="sidebar">
       <div class="sidebar-brand">
-        ${sealSVG(42)}
+        ${schoolLogo(42)}
         <div>
           <div class="name">DFLC Memorial<br>Colleges</div>
           <div class="tag">${role} portal</div>
@@ -268,30 +297,54 @@ function renderShell(mainHTML, role){
       </div>
     </div>
     <div class="main">
-      ${role==='teacher'||role==='student' ? renderAccountTools(role) : ''}
+      ${renderAccountTools(role)}
       ${mainHTML}
     </div>
   </div>`;
 }
 function renderAccountTools(role){
   const u = state.currentUser;
-  const notifications = notificationsForUser(u, role);
+  const notifications = unreadNotificationsForUser(u, role);
   return `<div class="account-tools">
     <button class="tool-btn" data-open-account-modal="notifications" aria-label="Notifications" title="Notifications">&#128276;${notifications.length ? `<span class="notification-count">${notifications.length}</span>` : ''}</button>
     <button class="tool-btn" data-open-account-modal="messages" aria-label="Messages" title="Messages">&#128172;</button>
-    <button class="profile-btn" data-open-account-modal="profile" title="Profile"><span class="avatar">${esc(initials(u.name))}</span><span class="profile-name">${esc(u.name)}</span></button>
+    <button class="profile-btn" data-open-account-modal="profile" title="Profile">${userAvatar(u)}<span class="profile-name">${esc(u.name)}</span></button>
     <button class="tool-btn settings-btn" data-open-account-modal="settings" aria-label="Account settings" title="Account settings">&#9881;</button>
   </div>`;
 }
 function initials(name){ return String(name||'?').split(/\s+/).filter(Boolean).slice(0,2).map(part=>part[0]).join('').toUpperCase(); }
+function userAvatar(user, className){
+  const classes = ['avatar', className].filter(Boolean).join(' ');
+  if(user && user.photoDataUrl) return `<img class="${classes}" src="${esc(user.photoDataUrl)}" alt="${esc(user.name)} profile picture">`;
+  return `<span class="${classes}">${esc(initials(user && user.name))}</span>`;
+}
 function notificationsForUser(user, role){
   if(!user) return [];
+  if(role==='admin'){
+    const items = [];
+    const unassigned = db.classes.filter(c=>!c.teacherId).length;
+    const unenrolled = db.users.filter(u=>u.role==='student' && !u.classId).length;
+    if(unassigned) items.push({id:`admin-unassigned-${unassigned}`, title:'Sections need teachers', body:`${unassigned} section${unassigned===1?'':'s'} still need a teacher assignment.`});
+    if(unenrolled) items.push({id:`admin-unenrolled-${unenrolled}`, title:'Students not enrolled', body:`${unenrolled} student${unenrolled===1?'':'s'} still need a section.`});
+    return items;
+  }
   if(role==='student'){
     const cls = getClass(user.classId);
-    return cls ? db.materials.filter(m=>m.classId===cls.id && m.dueDate).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,5).map(m=>({title:`Due ${fmtDate(m.dueDate)}`, body:m.title})) : [];
+    return cls ? db.materials.filter(m=>m.classId===cls.id && m.dueDate).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,5).map(m=>({id:`student-due-${m.id}`, title:`Due ${fmtDate(m.dueDate)}`, body:m.title})) : [];
   }
   const assignments = subjectAssignmentsOfTeacher(user.id);
-  return assignments.length ? [{title:'Teaching assignments', body:`You are assigned to ${assignments.length} subject${assignments.length===1?'':'s'}.`}] : [];
+  return assignments.length ? [{id:`teacher-assignments-${assignments.length}`, title:'Teaching assignments', body:`You are assigned to ${assignments.length} subject${assignments.length===1?'':'s'}.`}] : [];
+}
+function unreadNotificationsForUser(user, role){
+  const seen = new Set(user && Array.isArray(user.seenNotificationIds) ? user.seenNotificationIds : []);
+  return notificationsForUser(user, role).filter(item=>!seen.has(item.id));
+}
+async function markNotificationsRead(){
+  const user = state.currentUser;
+  if(!user) return;
+  const ids = notificationsForUser(user, state.view).map(item=>item.id);
+  user.seenNotificationIds = Array.from(new Set([...(user.seenNotificationIds||[]), ...ids]));
+  await saveDB();
 }
 function attachShellHandlers(){
   const mt = document.getElementById('menu-toggle');
@@ -619,6 +672,7 @@ function renderTeacherPost(cls){
       <div class="row1"><h4>${esc(m.title)}</h4>${typePill(m.type)}</div>
       <div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:''}</div>
       <div class="desc">${esc(m.description)}</div>
+      ${attachmentsHtml(m)}
       <div style="margin-top:10px;"><button class="btn btn-ghost btn-sm" data-remove-mat="${m.id}">Remove</button></div>
     </div>
   `).join('') : `<div class="card empty"><div class="glyph">🗂️</div>Nothing posted to this section yet.</div>`}
@@ -807,7 +861,7 @@ function renderStudentSubjects(cls){
   </div>
   <div class="card" style="margin-bottom:18px;">
     <div class="section-title">Work to do</div>
-    ${materials.length ? materials.map(m=>`<div class="mat-item"><div class="row1"><h4>${esc(m.title)}</h4>${typePill(m.type)}</div><div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:'· No due date'}</div><div class="desc">${esc(m.description)}</div></div>`).join('') : '<div class="empty">No assignments, quizzes, projects, or handouts yet.</div>'}
+    ${materials.length ? materials.map(m=>`<div class="mat-item"><div class="row1"><h4>${esc(m.title)}</h4>${typePill(m.type)}</div><div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:'· No due date'}</div><div class="desc">${esc(m.description)}</div>${attachmentsHtml(m)}</div>`).join('') : '<div class="empty">No assignments, quizzes, projects, or handouts yet.</div>'}
   </div>
   <div class="card">
     <div class="section-title">Attendance for ${esc(subject.name)}</div>
@@ -853,6 +907,7 @@ function renderStudentWork(cls){
         <div class="row1"><h4>${esc(m.title)}</h4>${typePill(m.type)}</div>
         <div class="meta">Posted ${fmtDate(m.postedAt)} ${m.dueDate?`· Due ${fmtDate(m.dueDate)}`:'· No due date'}</div>
         <div class="desc">${esc(m.description)}</div>
+        ${attachmentsHtml(m)}
       </div>`).join('')}
     </div>`).join('');
   const subjectTabs = assignments.length ? `<div class="subject-tabs"><button class="tab-btn ${!state.selectedStudentSubjectId?'active':''}" data-select-work-subject="">All subjects</button>${assignments.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedStudentSubjectId?'active':''}" data-select-work-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : '';
@@ -864,7 +919,11 @@ function attachStudentHandlers(){
 }
 
 /* ======================= MODALS ======================= */
-function openModal(type, payload){ state.modal = {type, payload}; render(); }
+async function openModal(type, payload){
+  if(type==='notifications') await markNotificationsRead();
+  state.modal = {type, payload};
+  render();
+}
 function closeModal(){
   state.modal = null;
   const existingModal = document.getElementById('modal-bg');
@@ -887,11 +946,23 @@ function renderModal(){
   else if(t==='postWork') inner = modalPostWork();
   else if(t==='editUser') inner = modalEditUser(state.modal.payload.userId);
   else if(t==='notifications') inner = modalNotifications();
-  else if(t==='messages') inner = modalMessages();
-  else if(t==='profile') inner = modalProfile();
+  else if(t==='messages') inner = modalMessagesEnhanced();
+  else if(t==='profile') inner = modalProfileEnhanced();
   else if(t==='settings') inner = modalSettings();
   bg.innerHTML = `<div class="modal">${inner}</div>`;
   document.body.appendChild(bg);
+  if(t==='editUser'){
+    const lrnInput = document.getElementById('f-lrn');
+    if(lrnInput){
+      lrnInput.readOnly = true;
+      if(!lrnInput.value) lrnInput.value = 'Generated automatically';
+      const label = lrnInput.closest('.field')?.querySelector('label');
+      if(label) label.textContent = 'LRN';
+      if(!lrnInput.nextElementSibling || !lrnInput.nextElementSibling.classList.contains('helper')){
+        lrnInput.insertAdjacentHTML('afterend', '<div class="helper">The system assigns this number automatically.</div>');
+      }
+    }
+  }
   bg.addEventListener('click', (e)=>{ if(e.target===bg) closeModal(); });
   attachModalHandlers(t);
 }
@@ -914,7 +985,7 @@ function modalEditUser(userId){
     <div class="field"><label>Full name</label><input type="text" id="f-name" value="${esc(user.name)}" required></div>
     <div class="field"><label>School email</label><input type="email" id="f-email" value="${esc(user.email||'')}" required></div>
     <div class="field"><label>Username</label><input type="text" id="f-username" value="${esc(user.username)}" required></div>
-    ${user.role==='student' ? `<div class="field"><label>LRN (optional)</label><input type="text" id="f-lrn" value="${esc(user.lrn||'')}"></div><div class="field"><label>Enroll in section</label><select id="f-class"><option value="">— Not yet enrolled —</option>${db.classes.map(c=>`<option value="${c.id}" ${c.id===user.classId?'selected':''}>${esc(classLabel(c))}</option>`).join('')}</select></div>` : ''}
+    ${user.role==='student' ? `<div class="field"><label>LRN</label><input type="text" id="f-lrn" value="${esc(user.lrn||'Generated automatically')}" readonly><div class="helper">The system assigns this number automatically.</div></div><div class="field"><label>Enroll in section</label><select id="f-class"><option value="">— Not yet enrolled —</option>${db.classes.map(c=>`<option value="${c.id}" ${c.id===user.classId?'selected':''}>${esc(classLabel(c))}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label>New password (optional)</label><input type="text" id="f-password" placeholder="Leave blank to keep current password"></div>
     <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save changes</button></div>
   </form>`;
@@ -934,12 +1005,43 @@ function modalSettings(){
   const user = state.currentUser;
   return `<h3>Account settings</h3><form id="modal-form"><div class="field"><label>Display name</label><input type="text" id="f-settings-name" value="${esc(user.name)}" required></div><div class="field"><label>School email</label><input type="email" id="f-settings-email" value="${esc(user.email||'')}" required></div><div class="field"><label>New password (optional)</label><input type="text" id="f-settings-password" placeholder="Leave blank to keep current password"></div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save settings</button></div></form>`;
 }
+function modalMessagesEnhanced(){
+  const user = state.currentUser;
+  const users = db.users.filter(u=>u.id!==user.id);
+  const messages = db.messages.filter(msg=>msg.fromId===user.id || msg.toId===user.id).sort((a,b)=>(b.sentAt||'').localeCompare(a.sentAt||''));
+  return `<h3>Messages</h3>
+  <form id="modal-form">
+    <div class="field"><label>Send to</label><select id="f-message-to" required><option value="">Choose recipient</option>${users.map(u=>`<option value="${u.id}">${esc(u.name)} (${esc(u.role)})</option>`).join('')}</select></div>
+    <div class="field"><label>Subject</label><input type="text" id="f-message-subject" required></div>
+    <div class="field"><label>Message</label><textarea id="f-message-body" required></textarea></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button><button type="submit" class="btn btn-gold">Send message</button></div>
+  </form>
+  <div class="message-list">
+    ${messages.length ? messages.map(msg=>{
+      const other = getUser(msg.fromId===user.id ? msg.toId : msg.fromId);
+      const direction = msg.fromId===user.id ? 'To' : 'From';
+      return `<div class="message-item"><div class="row1"><b>${esc(msg.subject)}</b><span>${fmtDate((msg.sentAt||'').slice(0,10))}</span></div><div class="meta">${direction} ${esc(other ? other.name : 'Unknown user')}</div><div>${esc(msg.body)}</div></div>`;
+    }).join('') : '<div class="empty">No messages yet.</div>'}
+  </div>`;
+}
+function modalProfileEnhanced(){
+  const user = state.currentUser;
+  return `<h3>Profile</h3>
+  <form id="modal-form">
+    <div class="profile-modal">${userAvatar(user, 'avatar-large')}<b>${esc(user.name)}</b><span class="meta">${esc(user.email||user.username)} - ${esc(user.role)}</span></div>
+    <div class="field"><label>Display name</label><input type="text" id="f-profile-name" value="${esc(user.name)}" required></div>
+    <div class="field"><label>School email</label><input type="email" id="f-profile-email" value="${esc(user.email||'')}" required></div>
+    <div class="field"><label>Profile picture</label><input type="file" id="f-profile-photo" accept="image/*"><div class="helper">Choose a photo from your computer, then save profile.</div></div>
+    ${user.photoDataUrl ? '<label class="check-row"><input type="checkbox" id="f-profile-remove-photo"> Remove current picture</label>' : ''}
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save profile</button></div>
+  </form>`;
+}
 function modalAddStudent(){
   return `<h3>New student account</h3>
   <form id="modal-form">
     <div class="field"><label>Full name</label><input type="text" id="f-name" required></div>
     <div class="field"><label>School email</label><input type="email" id="f-email" placeholder="student@flc.edu" required></div>
-    <div class="field"><label>LRN (optional)</label><input type="text" id="f-lrn"></div>
+    <div class="field"><label>LRN</label><input type="text" value="Generated automatically" readonly><div class="helper">A unique 12-digit LRN will be assigned when the account is created.</div></div>
     <div class="field"><label>Username</label><input type="text" id="f-username" required></div>
     <div class="field"><label>Temporary password</label><input type="text" id="f-password" required></div>
     <div class="field"><label>Enroll in section</label>
@@ -986,8 +1088,17 @@ function modalPostWork(){
     <div class="field"><label>Title</label><input type="text" id="f-title" required></div>
     <div class="field"><label>Instructions / description</label><textarea id="f-desc"></textarea></div>
     <div class="field"><label>Due date (optional)</label><input type="date" id="f-due"></div>
-    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Post to class</button></div>
+    <div class="field"><label>Attach files (optional)</label><input type="file" id="f-files" multiple><div class="helper">Attach handouts, worksheets, or references (roughly 4MB total).</div></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold" id="post-work-submit">Post to class</button></div>
   </form>`;
+}
+function readFileAsDataUrl(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>resolve(reader.result);
+    reader.onerror = ()=>reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 function attachModalHandlers(type){
   const cancel = document.getElementById('modal-cancel'); if(cancel) cancel.onclick = closeModal;
@@ -1005,7 +1116,7 @@ function attachModalHandlers(type){
       if(duplicate){ alert('That username or email is already taken.'); return; }
       user.name = name; user.email = email; user.username = username;
       if(user.role==='student'){
-        user.lrn = document.getElementById('f-lrn').value.trim();
+        user.lrn = user.lrn || generateUniqueLrn(user.id);
         user.classId = document.getElementById('f-class').value;
       }
       const password = document.getElementById('f-password').value;
@@ -1021,6 +1132,25 @@ function attachModalHandlers(type){
       const password = document.getElementById('f-settings-password').value;
       if(password) user.password = password;
       await saveDB(); closeModal(); showToast('Settings updated.');
+    } else if(type==='messages'){
+      const toId = document.getElementById('f-message-to').value;
+      const subject = document.getElementById('f-message-subject').value.trim();
+      const body = document.getElementById('f-message-body').value.trim();
+      if(!toId || !subject || !body){ alert('Complete the message before sending.'); return; }
+      db.messages.push({ id:uid('msg'), fromId:state.currentUser.id, toId, subject, body, sentAt:new Date().toISOString() });
+      await saveDB(); closeModal(); showToast('Message sent.');
+    } else if(type==='profile'){
+      const user = state.currentUser;
+      const email = document.getElementById('f-profile-email').value.trim().toLowerCase();
+      const duplicate = db.users.some(other=>other.id!==user.id && (other.email||'').toLowerCase()===email);
+      if(duplicate){ alert('That email is already taken.'); return; }
+      user.name = document.getElementById('f-profile-name').value.trim();
+      user.email = email;
+      const removePhoto = document.getElementById('f-profile-remove-photo');
+      const photoInput = document.getElementById('f-profile-photo');
+      if(removePhoto && removePhoto.checked) user.photoDataUrl = '';
+      if(photoInput && photoInput.files && photoInput.files[0]) user.photoDataUrl = await readFileAsDataUrl(photoInput.files[0]);
+      await saveDB(); closeModal(); showToast('Profile updated.');
     } else if(type==='addTeacher'){
       const name = document.getElementById('f-name').value.trim();
       const email = document.getElementById('f-email').value.trim().toLowerCase();
@@ -1032,7 +1162,7 @@ function attachModalHandlers(type){
     } else if(type==='addStudent'){
       const name = document.getElementById('f-name').value.trim();
       const email = document.getElementById('f-email').value.trim().toLowerCase();
-      const lrn = document.getElementById('f-lrn').value.trim();
+      const lrn = generateUniqueLrn();
       const username = document.getElementById('f-username').value.trim();
       const password = document.getElementById('f-password').value;
       const classId = document.getElementById('f-class').value;
@@ -1051,7 +1181,31 @@ function attachModalHandlers(type){
       const title = document.getElementById('f-title').value.trim();
       const description = document.getElementById('f-desc').value.trim();
       const dueDate = document.getElementById('f-due').value;
-      db.materials.push({ id: uid('m'), classId: state.selectedClassId, classSubjectId, type:mtype, title, description, dueDate, postedAt: new Date().toISOString().slice(0,10) });
+      const fileInput = document.getElementById('f-files');
+      const chosenFiles = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
+      const totalBytes = chosenFiles.reduce((sum,f)=>sum+f.size, 0);
+      if(totalBytes > 4 * 1024 * 1024){
+        alert('Attached files are too large (about ' + fmtFileSize(totalBytes) + '). Please keep total attachments under ~4MB.');
+        return;
+      }
+      const submitBtn = document.getElementById('post-work-submit');
+      if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Posting…'; }
+      let attachments = [];
+      try{
+        attachments = await Promise.all(chosenFiles.map(async f=>({
+          id: uid('file'),
+          name: f.name,
+          size: f.size,
+          mimeType: f.type,
+          dataUrl: await readFileAsDataUrl(f),
+        })));
+      }catch(err){
+        console.error('attachment read failed', err);
+        alert('One of the attached files could not be read. Please try again.');
+        if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Post to class'; }
+        return;
+      }
+      db.materials.push({ id: uid('m'), classId: state.selectedClassId, classSubjectId, type:mtype, title, description, dueDate, postedAt: new Date().toISOString().slice(0,10), attachments });
       await saveDB(); closeModal(); showToast('Posted to class.');
     } else if(type==='addSubject'){
       const name = document.getElementById('f-subject-name').value.trim();
