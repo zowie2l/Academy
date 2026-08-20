@@ -61,7 +61,6 @@ function defaultDB(){
     grades: [],
     messages: [],
     submissions: [],
-    behavior: [],
   };
 }
 
@@ -94,7 +93,6 @@ function normalizeDB(data){
   data.subjects = Array.isArray(data.subjects) ? data.subjects : [];
   data.classSubjects = Array.isArray(data.classSubjects) ? data.classSubjects : [];
   data.submissions = Array.isArray(data.submissions) ? data.submissions : [];
-  data.behavior = Array.isArray(data.behavior) ? data.behavior : [];
   const exampleUsernames = new Set(['teacher1','teacher2','student1','student2','student3','student4']);
   const removedUserIds = new Set(data.users.filter(user=>exampleUsernames.has(user.username)).map(user=>user.id));
   data.users = data.users.filter(user=>!exampleUsernames.has(user.username));
@@ -108,7 +106,6 @@ function normalizeDB(data){
   data.attendance = data.attendance.filter(record=>!removedClassIds.has(record.classId));
   data.grades = data.grades.filter(grade=>!removedClassIds.has(grade.classId) && !removedUserIds.has(grade.studentId) && !removedMaterialIds.has(grade.materialId));
   data.submissions = data.submissions.filter(sub=>!removedUserIds.has(sub.studentId) && !removedMaterialIds.has(sub.materialId));
-  data.behavior = data.behavior.filter(rec=>!removedUserIds.has(rec.studentId) && !removedClassIds.has(rec.classId));
   data.users.forEach(user=>{
     if(!user.email) user.email = user.username || '';
   });
@@ -196,36 +193,6 @@ function attachmentsHtml(material){
   return `<div class="attachment-list">${files.map(f=>`<a class="attachment-chip" href="${esc(f.dataUrl)}" download="${esc(f.name)}" title="Download ${esc(f.name)}">📎 ${esc(f.name)}${f.size!==undefined?` <span>(${fmtFileSize(f.size)})</span>`:''}</a>`).join('')}</div>`;
 }
 
-/* ---------------------- thresholds & analytics helpers ---------------------- */
-const PASSING_THRESHOLD = 75;
-const ABSENCE_ALERT_THRESHOLD = 3;
-function studentAverage(studentId){
-  const g = gradesOf(studentId);
-  if(!g.length) return null;
-  return Math.round(100*g.reduce((sum,x)=>sum+(x.score/x.maxScore),0)/g.length);
-}
-function studentAbsenceCount(studentId, classId){
-  return db.attendance.filter(a=>a.classId===classId).reduce((sum,a)=>sum + (a.records[studentId]==='absent'?1:0), 0);
-}
-function barChartHtml(items, opts){
-  opts = opts || {};
-  if(!items || !items.length) return '';
-  const max = opts.max || Math.max(1, ...items.map(i=>i.value));
-  return `<div class="bar-chart">${items.map(i=>{
-    const pct = Math.max(2, Math.round((Math.min(i.value,max)/max)*100));
-    const color = i.color || 'var(--gold)';
-    return `<div class="bar-col"><div class="bar-val">${i.value}${opts.suffix||''}</div><div class="bar" style="height:${pct}%; background:${color};"></div><div class="bar-label" title="${esc(i.label)}">${esc(i.label)}</div></div>`;
-  }).join('')}</div>`;
-}
-
-/* ---------------------- behavior records ---------------------- */
-const BEHAVIOR_TYPES = ['Positive','Negative','Neutral'];
-function behaviorOf(studentId){ return db.behavior.filter(b=>b.studentId===studentId).sort((a,b)=>(b.date||'').localeCompare(a.date||'')); }
-function behaviorPill(type){
-  const map = {Positive:'pill-success', Negative:'pill-danger', Neutral:'pill-slate'};
-  return `<span class="pill ${map[type]||'pill-slate'}">${esc(type)}</span>`;
-}
-
 /* ---------------------- school logo ---------------------- */
 function schoolLogo(size, className){
   size = size || 110;
@@ -265,7 +232,7 @@ function render(){
   const app = document.getElementById('app');
   const existingToast = document.querySelector('.toast');
   if(existingToast) existingToast.remove();
-  if(state.view==='login'){ app.innerHTML = renderLogin(); attachLoginHandlers(); }
+  if(state.view==='login'){ document.body.classList.remove('no-scroll'); app.innerHTML = renderLogin(); attachLoginHandlers(); }
   else if(state.view==='admin'){ app.innerHTML = renderShell(renderAdminMain(), 'admin'); attachShellHandlers(); attachAdminHandlers(); }
   else if(state.view==='teacher'){ app.innerHTML = renderShell(renderTeacherMain(), 'teacher'); attachShellHandlers(); attachTeacherHandlers(); }
   else if(state.view==='student'){ app.innerHTML = renderShell(renderStudentMain(), 'student'); attachShellHandlers(); attachStudentHandlers(); }
@@ -327,19 +294,20 @@ function renderShell(mainHTML, role){
   const navItems = {
     admin: [
       ['overview','Overview'],['teachers','Teachers'],['students','Students'],
-      ['classes','Classes & Sections'],['subjects','Subjects / Courses'],['evaluations','Evaluations'],['behavior','Behavior Log'],
+      ['classes','Classes & Sections'],['subjects','Subjects / Courses'],['evaluations','Evaluations'],
     ],
     teacher: [
-      ['overview','Overview'],['roster','My Classes'],['post','Post Work'],['attendance','Attendance'],['gradebook','Gradebook'],['behavior','Behavior'],
+      ['overview','Overview'],['roster','My Classes'],['post','Post Work'],['attendance','Attendance'],['gradebook','Gradebook'],
     ],
     student: [
-      ['overview','Overview'],['grades','My Grades'],['subjects','Subjects / Courses'],['work','Class Work'],['behavior','My Behavior'],
+      ['overview','Overview'],['grades','My Grades'],['subjects','Subjects / Courses'],['work','Class Work'],
     ],
   };
   const activeTab = role==='admin'?state.adminTab: role==='teacher'?state.teacherTab: state.studentTab;
   return `
   <div class="shell">
     <button class="menu-toggle" id="menu-toggle">☰ Menu</button>
+    <div class="sidebar-backdrop ${state.sidebarOpen?'open':''}" id="sidebar-backdrop"></div>
     <div class="sidebar ${state.sidebarOpen?'open':''}" id="sidebar">
       <div class="sidebar-brand">
         ${schoolLogo(42)}
@@ -347,6 +315,7 @@ function renderShell(mainHTML, role){
           <div class="name">DFLC Memorial<br>Colleges</div>
           <div class="tag">${role} portal</div>
         </div>
+        <button class="sidebar-close" id="sidebar-close" aria-label="Close menu">&times;</button>
       </div>
       <nav>
         ${navItems[role].map(([key,label])=>`<button class="nav-item ${activeTab===key?'active':''}" data-nav="${key}">${label}</button>`).join('')}
@@ -387,36 +356,14 @@ function notificationsForUser(user, role){
     const unenrolled = db.users.filter(u=>u.role==='student' && !u.classId).length;
     if(unassigned) items.push({id:`admin-unassigned-${unassigned}`, title:'Sections need teachers', body:`${unassigned} section${unassigned===1?'':'s'} still need a teacher assignment.`});
     if(unenrolled) items.push({id:`admin-unenrolled-${unenrolled}`, title:'Students not enrolled', body:`${unenrolled} student${unenrolled===1?'':'s'} still need a section.`});
-    const lowStudents = db.users.filter(u=>u.role==='student').filter(s=>{ const avg=studentAverage(s.id); return avg!==null && avg<PASSING_THRESHOLD; }).length;
-    if(lowStudents) items.push({id:`admin-lowgrades-${lowStudents}`, title:'Students below passing', body:`${lowStudents} student${lowStudents===1?'':'s'} school-wide ${lowStudents===1?'is':'are'} averaging below ${PASSING_THRESHOLD}%.`});
     return items;
   }
   if(role==='student'){
     const cls = getClass(user.classId);
-    const items = cls ? db.materials.filter(m=>m.classId===cls.id && m.dueDate).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,5).map(m=>({id:`student-due-${m.id}`, title:`Due ${fmtDate(m.dueDate)}`, body:m.title})) : [];
-    const avg = studentAverage(user.id);
-    if(avg!==null && avg<PASSING_THRESHOLD) items.push({id:`student-lowgrade-${avg}`, title:'Grade alert', body:`Your overall average is ${avg}%, below the ${PASSING_THRESHOLD}% passing mark.`});
-    if(cls){
-      const absences = studentAbsenceCount(user.id, cls.id);
-      if(absences>=ABSENCE_ALERT_THRESHOLD) items.push({id:`student-absences-${absences}`, title:'Attendance alert', body:`You have ${absences} recorded absences this term.`});
-    }
-    return items;
+    return cls ? db.materials.filter(m=>m.classId===cls.id && m.dueDate).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,5).map(m=>({id:`student-due-${m.id}`, title:`Due ${fmtDate(m.dueDate)}`, body:m.title})) : [];
   }
   const assignments = subjectAssignmentsOfTeacher(user.id);
-  const items = assignments.length ? [{id:`teacher-assignments-${assignments.length}`, title:'Teaching assignments', body:`You are assigned to ${assignments.length} subject${assignments.length===1?'':'s'}.`}] : [];
-  const teacherClasses = classesOfTeacher(user.id);
-  const atRiskIds = new Set();
-  const absenceRiskIds = new Set();
-  teacherClasses.forEach(c=>{
-    studentsOfClass(c.id).forEach(s=>{
-      const avg = studentAverage(s.id);
-      if(avg!==null && avg<PASSING_THRESHOLD) atRiskIds.add(s.id);
-      if(studentAbsenceCount(s.id, c.id)>=ABSENCE_ALERT_THRESHOLD) absenceRiskIds.add(s.id);
-    });
-  });
-  if(atRiskIds.size) items.push({id:`teacher-atrisk-${atRiskIds.size}`, title:'Students falling behind', body:`${atRiskIds.size} student${atRiskIds.size===1?'':'s'} in your classes ${atRiskIds.size===1?'is':'are'} averaging below ${PASSING_THRESHOLD}%.`});
-  if(absenceRiskIds.size) items.push({id:`teacher-absences-${absenceRiskIds.size}`, title:'Attendance alert', body:`${absenceRiskIds.size} student${absenceRiskIds.size===1?'':'s'} in your classes ${absenceRiskIds.size===1?'has':'have'} ${ABSENCE_ALERT_THRESHOLD}+ absences.`});
-  return items;
+  return assignments.length ? [{id:`teacher-assignments-${assignments.length}`, title:'Teaching assignments', body:`You are assigned to ${assignments.length} subject${assignments.length===1?'':'s'}.`}] : [];
 }
 function unreadNotificationsForUser(user, role){
   const seen = new Set(user && Array.isArray(user.seenNotificationIds) ? user.seenNotificationIds : []);
@@ -432,6 +379,11 @@ async function markNotificationsRead(){
 function attachShellHandlers(){
   const mt = document.getElementById('menu-toggle');
   if(mt) mt.onclick = ()=>{ state.sidebarOpen = !state.sidebarOpen; render(); };
+  const sc = document.getElementById('sidebar-close');
+  if(sc) sc.onclick = ()=>{ state.sidebarOpen = false; render(); };
+  const bd = document.getElementById('sidebar-backdrop');
+  if(bd) bd.onclick = ()=>{ state.sidebarOpen = false; render(); };
+  document.body.classList.toggle('no-scroll', !!state.sidebarOpen);
   const lo = document.getElementById('logout-btn');
   if(lo) lo.onclick = logout;
   document.querySelectorAll('[data-nav]').forEach(btn=>{
@@ -457,7 +409,6 @@ function renderAdminMain(){
   else if(tab==='classes') body = renderAdminClasses();
   else if(tab==='subjects') body = renderAdminSubjects();
   else if(tab==='evaluations') body = renderAdminEvaluations();
-  else if(tab==='behavior') body = renderAdminBehavior();
   return `
   <div class="topbar">
     <div><h2>${titleFor(tab)}</h2><div class="desc">${descFor(tab)}</div></div>
@@ -465,7 +416,7 @@ function renderAdminMain(){
   ${body}`;
 }
 function titleFor(tab){
-  return {overview:'Overview', teachers:'Teachers', students:'Students', classes:'Classes & Sections', subjects:'Subjects / Courses', evaluations:'Evaluations', behavior:'Behavior Log'}[tab];
+  return {overview:'Overview', teachers:'Teachers', students:'Students', classes:'Classes & Sections', subjects:'Subjects / Courses', evaluations:'Evaluations'}[tab];
 }
 function descFor(tab){
   return {
@@ -475,7 +426,6 @@ function descFor(tab){
     classes:'Open grade levels and sections, and see who is assigned to each.',
     subjects:'Create the subjects or courses that teachers will teach and students will see.',
     evaluations:'Review grades and attendance across every class — useful for resolving disputes or errors.',
-    behavior:'Positive, negative, and neutral conduct records logged by teachers across every section.',
   }[tab];
 }
 function renderAdminOverview(){
@@ -490,10 +440,6 @@ function renderAdminOverview(){
     <div class="stat-card"><div class="num mono">${studentCount}</div><div class="label">Students</div></div>
     <div class="stat-card"><div class="num mono">${classCount}</div><div class="label">Class Sections</div></div>
   </div>
-  ${db.classes.length ? `<div class="card" style="margin-bottom:20px;">
-    <div class="section-title">Enrollment per section</div>
-    ${barChartHtml(db.classes.map(c=>({label:classLabel(c), value:studentsOfClass(c.id).length})))}
-  </div>` : ''}
   <div class="card" style="margin-bottom:20px;">
     <div class="section-title">Class sections at a glance</div>
     <table>
@@ -597,17 +543,7 @@ function renderAdminSubjects(){
 }
 function renderAdminEvaluations(){
   const students = db.users.filter(u=>u.role==='student');
-  const withGrades = students.filter(s=>studentAverage(s.id)!==null);
-  const passingCt = withGrades.filter(s=>studentAverage(s.id)>=PASSING_THRESHOLD).length;
-  const belowCt = withGrades.length - passingCt;
   return `
-  ${withGrades.length ? `<div class="card" style="margin-bottom:18px;">
-    <div class="section-title">Grade standing (school-wide)</div>
-    ${barChartHtml([
-      {label:`Passing (≥${PASSING_THRESHOLD}%)`, value:passingCt, color:'var(--success)'},
-      {label:'Below passing', value:belowCt, color:'var(--danger)'},
-    ])}
-  </div>` : ''}
   <div class="card">
     <div class="section-title">Student evaluation records</div>
     <table>
@@ -646,17 +582,6 @@ function renderAdminEvaluations(){
     </table>
   </div>`;
 }
-function renderAdminBehavior(){
-  const records = db.behavior.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-  return `<div class="card">
-    <div class="section-title">Behavioral records — all sections</div>
-    <table><thead><tr><th>Date</th><th>Student</th><th>Section</th><th>Type</th><th>Category</th><th>Note</th><th>Recorded by</th></tr></thead>
-    <tbody>${records.map(r=>{
-      const s = getUser(r.studentId); const cls = getClass(r.classId); const t = getUser(r.recordedBy);
-      return `<tr><td>${fmtDate(r.date)}</td><td><b>${esc(s?s.name:'—')}</b></td><td>${cls?classLabel(cls):'—'}</td><td>${behaviorPill(r.type)}</td><td>${esc(r.category||'—')}</td><td>${esc(r.note||'')}</td><td>${esc(t?t.name:'—')}</td></tr>`;
-    }).join('') || `<tr><td colspan="7" class="empty">No behavioral records yet.</td></tr>`}</tbody></table>
-  </div>`;
-}
 function attachAdminHandlers(){
   const at = document.getElementById('add-teacher-btn'); if(at) at.onclick = ()=>openModal('addTeacher');
   const as = document.getElementById('add-student-btn'); if(as) as.onclick = ()=>openModal('addStudent');
@@ -677,7 +602,6 @@ function attachAdminHandlers(){
     db.users = db.users.filter(u=>u.id!==id);
     db.grades = db.grades.filter(g=>g.studentId!==id);
     db.attendance.forEach(a=>{ delete a.records[id]; });
-    db.behavior = db.behavior.filter(r=>r.studentId!==id);
     await saveDB(); showToast('Student account removed.'); render();
   });
   document.querySelectorAll('[data-remove-class]').forEach(b=>b.onclick=async ()=>{
@@ -728,7 +652,6 @@ function renderTeacherMain(){
   else if(tab==='post') body = renderTeacherPost(activeCls);
   else if(tab==='attendance') body = renderTeacherAttendance(activeCls);
   else if(tab==='gradebook') body = renderTeacherGradebook(activeCls);
-  else if(tab==='behavior') body = renderTeacherBehavior(activeCls);
 
   return `
   <div class="topbar">
@@ -743,7 +666,7 @@ function renderTeacherMain(){
   ${body}`;
 }
 function tabTitleTeacher(tab){
-  return {overview:'Overview', roster:'Class Roster', post:'Post Work', attendance:'Attendance', gradebook:'Gradebook', behavior:'Behavior'}[tab];
+  return {overview:'Overview', roster:'Class Roster', post:'Post Work', attendance:'Attendance', gradebook:'Gradebook'}[tab];
 }
 function renderTeacherOverview(classes){
   const teacherId = state.currentUser.id;
@@ -826,37 +749,12 @@ function renderTeacherAttendance(cls){
     }).join('') || `<tr><td colspan="4" class="empty">No attendance recorded yet.</td></tr>`}</tbody></table>
   </div>`;
 }
-function renderTeacherBehavior(cls){
-  const students = studentsOfClass(cls.id);
-  const records = db.behavior.filter(b=>b.classId===cls.id).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-  return `<div class="card" style="margin-bottom:20px;">
-    <div class="section-title">Log behavior — ${classLabel(cls)} <button class="btn btn-gold btn-sm" id="add-behavior-btn" ${students.length?'':'disabled'}>+ New record</button></div>
-    <div class="helper">${students.length ? 'Record positive, negative, or neutral conduct notes for a student in this section.' : 'No students enrolled in this section yet.'}</div>
-  </div>
-  <div class="card">
-    <div class="section-title">Recent records</div>
-    <table><thead><tr><th>Date</th><th>Student</th><th>Type</th><th>Category</th><th>Note</th><th></th></tr></thead>
-    <tbody>${records.map(r=>{
-      const s = getUser(r.studentId);
-      return `<tr><td>${fmtDate(r.date)}</td><td><b>${esc(s?s.name:'—')}</b></td><td>${behaviorPill(r.type)}</td><td>${esc(r.category||'—')}</td><td>${esc(r.note||'')}</td><td><button class="btn btn-ghost btn-sm" data-remove-behavior="${r.id}">Remove</button></td></tr>`;
-    }).join('') || `<tr><td colspan="6" class="empty">No records yet for this section.</td></tr>`}</tbody></table>
-  </div>`;
-}
 function renderTeacherGradebook(cls){
   const students = studentsOfClass(cls.id);
   const assignment = getClassSubject(state.selectedClassSubjectId);
   const subject = assignment ? getSubject(assignment.subjectId) : null;
   const mats = assignment ? materialsOfClassSubject(assignment.id).filter(m=>m.type!=='Handout') : [];
-  const chartItems = mats.map(m=>{
-    const scores = students.map(s=>db.grades.find(g=>g.studentId===s.id && g.materialId===m.id)).filter(Boolean);
-    const avg = scores.length ? Math.round(100*scores.reduce((sum,g)=>sum+(g.score/g.maxScore),0)/scores.length) : 0;
-    return {label:m.title, value:avg, suffix:'%'};
-  });
   return `
-  ${chartItems.length ? `<div class="card" style="margin-bottom:18px;">
-    <div class="section-title">Class average per work item</div>
-    ${barChartHtml(chartItems, {max:100, suffix:'%'})}
-  </div>` : ''}
   <div class="card" style="overflow-x:auto;">
     <div class="section-title">Gradebook — ${classLabel(cls)}${subject ? ` · ${esc(subject.name)}` : ''}</div>
     ${students.length===0 || mats.length===0 ? `<div class="empty">${students.length===0?'No students enrolled yet.':'Post an assignment, quiz, or project first — grades appear once there is work to score.'}</div>` : `
@@ -879,12 +777,6 @@ function attachTeacherHandlers(){
   document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.teacherTab = 'roster'; render(); });
   document.querySelectorAll('[data-select-subject]').forEach(b=>b.onclick=()=>{ state.selectedClassSubjectId = b.dataset.selectSubject; render(); });
   const pw = document.getElementById('post-work-btn'); if(pw) pw.onclick=()=>openModal('postWork');
-  const ab = document.getElementById('add-behavior-btn'); if(ab) ab.onclick=()=>openModal('addBehavior', {classId: state.selectedClassId});
-  document.querySelectorAll('[data-remove-behavior]').forEach(b=>b.onclick=async ()=>{
-    if(!confirm('Remove this behavioral record?')) return;
-    db.behavior = db.behavior.filter(r=>r.id!==b.dataset.removeBehavior);
-    await saveDB(); showToast('Record removed.'); render();
-  });
   document.querySelectorAll('[data-view-submissions]').forEach(b=>b.onclick=()=>openModal('viewSubmissions', {materialId: b.dataset.viewSubmissions}));
   document.querySelectorAll('[data-remove-mat]').forEach(b=>b.onclick=async ()=>{
     if(!confirm('Remove this posted work? This also removes any student submissions and recorded scores for it.')) return;
@@ -942,11 +834,10 @@ function renderStudentMain(){
   else if(tab==='grades') body = renderStudentGrades(cls);
   else if(tab==='subjects') body = renderStudentSubjects(cls);
   else if(tab==='work') body = renderStudentWork(cls);
-  else if(tab==='behavior') body = renderStudentBehavior(cls);
   return `<div class="topbar"><div><h2>${tabTitleStudent(tab)}</h2><div class="desc">${classLabel(cls)}</div></div></div>${body}`;
 }
 function tabTitleStudent(tab){
-  return {overview:'Overview', grades:'My Grades', subjects:'Subjects / Courses', work:'Class Work', behavior:'My Behavior'}[tab];
+  return {overview:'Overview', grades:'My Grades', subjects:'Subjects / Courses', work:'Class Work'}[tab];
 }
 function renderStudentOverview(cls){
   const studentId = state.currentUser.id;
@@ -972,17 +863,12 @@ function renderStudentGrades(cls){
   const u = state.currentUser;
   const g = gradesOf(u.id);
   const avg = g.length ? Math.round(100*g.reduce((s,x)=>s+(x.score/x.maxScore),0)/g.length) : null;
-  const chartItems = g.map(x=>{ const m=db.materials.find(mm=>mm.id===x.materialId); return {label:m?m.title:'—', value:Math.round(100*x.score/x.maxScore), suffix:'%', color: (x.score/x.maxScore*100)>=PASSING_THRESHOLD?'var(--success)':'var(--danger)'}; });
   return `
   <div class="grid grid-3" style="margin-bottom:22px;">
     <div class="stat-card"><div class="num mono">${avg!==null?avg+'%':'—'}</div><div class="label">Overall average</div></div>
     <div class="stat-card"><div class="num mono">${g.length}</div><div class="label">Items graded</div></div>
     <div class="stat-card"><div class="num mono">${materialsOfClass(cls.id).filter(m=>m.type!=='Handout').length - g.length}</div><div class="label">Pending</div></div>
   </div>
-  ${chartItems.length ? `<div class="card" style="margin-bottom:18px;">
-    <div class="section-title">Scores by work item</div>
-    ${barChartHtml(chartItems, {max:100, suffix:'%'})}
-  </div>` : ''}
   <div class="card">
     <div class="section-title">Grade record</div>
     <table><thead><tr><th>Title</th><th>Type</th><th>Score</th></tr></thead>
@@ -1036,14 +922,6 @@ function renderStudentAttendance(cls){
     <div class="stat-card"><div class="num mono">${late}</div><div class="label">Late</div></div>
     <div class="stat-card"><div class="num mono">${absent}</div><div class="label">Absent</div></div>
   </div>
-  ${att.length ? `<div class="card" style="margin-bottom:18px;">
-    <div class="section-title">Attendance breakdown</div>
-    ${barChartHtml([
-      {label:'Present', value:present, color:'var(--success)'},
-      {label:'Late', value:late, color:'#C79A3D'},
-      {label:'Absent', value:absent, color:'var(--danger)'},
-    ])}
-  </div>` : ''}
   <div class="card">
     <div class="section-title">Attendance log</div>
     <table><thead><tr><th>Date</th><th>Status</th></tr></thead>
@@ -1078,21 +956,6 @@ function renderStudentWork(cls){
   const subjectTabs = assignments.length ? `<div class="subject-tabs"><button class="tab-btn ${!state.selectedStudentSubjectId?'active':''}" data-select-work-subject="">All subjects</button>${assignments.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedStudentSubjectId?'active':''}" data-select-work-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : '';
   return subjectTabs + (work || `<div class="card empty"><div class="glyph">📚</div>Your teachers haven't posted any work yet.</div>`);
 }
-function renderStudentBehavior(cls){
-  const records = behaviorOf(state.currentUser.id);
-  const pos = records.filter(r=>r.type==='Positive').length;
-  const neg = records.filter(r=>r.type==='Negative').length;
-  return `<div class="grid grid-3" style="margin-bottom:22px;">
-    <div class="stat-card"><div class="num mono">${pos}</div><div class="label">Positive notes</div></div>
-    <div class="stat-card"><div class="num mono">${neg}</div><div class="label">Negative notes</div></div>
-    <div class="stat-card"><div class="num mono">${records.length}</div><div class="label">Total records</div></div>
-  </div>
-  <div class="card">
-    <div class="section-title">Behavior log</div>
-    <table><thead><tr><th>Date</th><th>Type</th><th>Category</th><th>Note</th></tr></thead>
-    <tbody>${records.map(r=>`<tr><td>${fmtDate(r.date)}</td><td>${behaviorPill(r.type)}</td><td>${esc(r.category||'—')}</td><td>${esc(r.note||'')}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No records yet.</td></tr>`}</tbody></table>
-  </div>`;
-}
 function attachStudentHandlers(){
   document.querySelectorAll('[data-select-student-subject]').forEach(btn=>btn.onclick=()=>{ state.selectedStudentSubjectId = btn.dataset.selectStudentSubject || null; state.studentTab = 'subjects'; render(); });
   document.querySelectorAll('[data-select-work-subject]').forEach(btn=>btn.onclick=()=>{ state.selectedStudentSubjectId = btn.dataset.selectWorkSubject || null; state.studentTab = 'work'; render(); });
@@ -1102,7 +965,6 @@ function attachStudentHandlers(){
 /* ======================= MODALS ======================= */
 async function openModal(type, payload){
   if(type==='notifications') await markNotificationsRead();
-  if(type==='messages' && !payload) payload = {view:'list'};
   state.modal = {type, payload};
   render();
 }
@@ -1129,7 +991,6 @@ function renderModal(){
   else if(t==='submitWork') inner = modalSubmitWork(state.modal.payload.materialId);
   else if(t==='viewSubmissions') inner = modalViewSubmissions(state.modal.payload.materialId);
   else if(t==='editUser') inner = modalEditUser(state.modal.payload.userId);
-  else if(t==='addBehavior') inner = modalAddBehavior(state.modal.payload.classId);
   else if(t==='notifications') inner = modalNotifications();
   else if(t==='messages') inner = modalMessagesEnhanced();
   else if(t==='profile') inner = modalProfileEnhanced();
@@ -1175,19 +1036,6 @@ function modalEditUser(userId){
     <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save changes</button></div>
   </form>`;
 }
-function modalAddBehavior(classId){
-  const students = studentsOfClass(classId);
-  const today = new Date().toISOString().slice(0,10);
-  return `<h3>New behavior record</h3>
-  <form id="modal-form">
-    <div class="field"><label>Student</label><select id="f-behavior-student" required>${students.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
-    <div class="field"><label>Type</label><select id="f-behavior-type">${BEHAVIOR_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
-    <div class="field"><label>Category</label><input type="text" id="f-behavior-category" placeholder="e.g. Participation, Tardiness, Conduct"></div>
-    <div class="field"><label>Note</label><textarea id="f-behavior-note" placeholder="Describe what happened"></textarea></div>
-    <div class="field"><label>Date</label><input type="date" id="f-behavior-date" value="${today}"></div>
-    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save record</button></div>
-  </form>`;
-}
 function modalNotifications(){
   const items = notificationsForUser(state.currentUser, state.view);
   return `<h3>Notifications</h3>${items.length ? items.map(item=>`<div class="notification-item"><b>${esc(item.title)}</b><div>${esc(item.body)}</div></div>`).join('') : '<div class="empty">You have no new notifications.</div>'}<div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
@@ -1203,78 +1051,24 @@ function modalSettings(){
   const user = state.currentUser;
   return `<h3>Account settings</h3><form id="modal-form"><div class="field"><label>Display name</label><input type="text" id="f-settings-name" value="${esc(user.name)}" required></div><div class="field"><label>School email</label><input type="email" id="f-settings-email" value="${esc(user.email||'')}" required></div><div class="field"><label>New password (optional)</label><input type="text" id="f-settings-password" placeholder="Leave blank to keep current password"></div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save settings</button></div></form>`;
 }
-function conversationPartners(){
-  const user = state.currentUser;
-  const ids = new Set();
-  db.messages.forEach(m=>{
-    if(m.fromId===user.id) ids.add(m.toId);
-    else if(m.toId===user.id) ids.add(m.fromId);
-  });
-  return Array.from(ids).map(id=>{
-    const msgs = db.messages.filter(m=>(m.fromId===user.id&&m.toId===id)||(m.fromId===id&&m.toId===user.id)).sort((a,b)=>(a.sentAt||'').localeCompare(b.sentAt||''));
-    return { user:getUser(id), last: msgs[msgs.length-1] };
-  }).filter(c=>c.user && c.last).sort((a,b)=>(b.last.sentAt||'').localeCompare(a.last.sentAt||''));
-}
-function messageAttachmentHtml(m){
-  if(!m.attachment || !m.attachment.dataUrl) return '';
-  return `<a class="attachment-chip" href="${esc(m.attachment.dataUrl)}" download="${esc(m.attachment.name)}">📎 ${esc(m.attachment.name)}${m.attachment.size!==undefined?` <span>(${fmtFileSize(m.attachment.size)})</span>`:''}</a>`;
-}
 function modalMessagesEnhanced(){
-  const payload = state.modal.payload || {view:'list'};
-  if(payload.view==='compose') return modalMessagesCompose(payload);
-  if(payload.view==='thread') return modalMessagesThread(payload.otherId);
-  return modalMessagesList();
-}
-function modalMessagesList(){
-  const convos = conversationPartners();
   const user = state.currentUser;
-  return `<h3 style="display:flex; align-items:center; justify-content:space-between; gap:10px;">Messages <button type="button" class="btn btn-gold btn-sm" id="new-message-btn">+ New message</button></h3>
-  <div class="message-list">
-    ${convos.length ? convos.map(c=>`<button type="button" class="message-item conversation-row" data-open-thread="${c.user.id}">
-      <div class="row1"><b>${esc(c.user.name)}</b><span>${fmtDate((c.last.sentAt||'').slice(0,10))}</span></div>
-      <div class="meta">${esc(c.user.role)}</div>
-      <div>${esc((c.last.fromId===user.id?'You: ':'') + (c.last.body || (c.last.attachment ? '📎 ' + c.last.attachment.name : '')).slice(0,80))}</div>
-    </button>`).join('') : '<div class="empty"><div class="glyph">&#128172;</div>No conversations yet — start one.</div>'}
-  </div>
-  <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
-}
-function modalMessagesCompose(payload){
-  const search = payload.search || '';
-  const recipient = payload.recipientId ? getUser(payload.recipientId) : null;
-  const candidates = (search && !recipient) ? db.users.filter(u=>u.id!==state.currentUser.id && u.name.toLowerCase().includes(search.toLowerCase())).slice(0,6) : [];
-  return `<h3><button type="button" class="icon-btn" id="back-to-list" title="Back">&larr;</button> New message</h3>
+  const users = db.users.filter(u=>u.id!==user.id);
+  const messages = db.messages.filter(msg=>msg.fromId===user.id || msg.toId===user.id).sort((a,b)=>(b.sentAt||'').localeCompare(a.sentAt||''));
+  return `<h3>Messages</h3>
   <form id="modal-form">
-    <div class="field">
-      <label>To</label>
-      ${recipient
-        ? `<div class="attachment-chip" style="width:fit-content;">${esc(recipient.name)} <span>(${esc(recipient.role)})</span> <span style="cursor:pointer; margin-left:6px;" id="clear-recipient" title="Change recipient">&times;</span></div>`
-        : `<input type="text" id="f-message-to-search" placeholder="Type a name…" value="${esc(search)}" autocomplete="off">
-           <div id="recipient-suggestions">${candidates.map(u=>`<div class="notification-item" data-pick-recipient="${u.id}"><b>${esc(u.name)}</b> <span class="meta">${esc(u.role)}</span></div>`).join('')}</div>`}
-    </div>
-    <div class="field"><label>Message</label><textarea id="f-message-body" ${recipient?'required':''}></textarea></div>
-    <div class="field"><label>Attach a file (optional)</label><input type="file" id="f-message-file"></div>
-    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold" ${recipient?'':'disabled'}>Send</button></div>
-  </form>`;
-}
-function modalMessagesThread(otherId){
-  const other = getUser(otherId);
-  if(!other) return modalMessagesList();
-  const user = state.currentUser;
-  const msgs = db.messages.filter(m=>(m.fromId===user.id&&m.toId===otherId)||(m.fromId===otherId&&m.toId===user.id)).sort((a,b)=>(a.sentAt||'').localeCompare(b.sentAt||''));
-  return `<h3><button type="button" class="icon-btn" id="back-to-list" title="Back">&larr;</button> ${esc(other.name)} <span class="meta">(${esc(other.role)})</span></h3>
-  <div class="chat-thread">
-    ${msgs.length ? msgs.map(m=>`<div class="chat-bubble ${m.fromId===user.id?'mine':'theirs'}">
-      ${m.body?`<div>${esc(m.body)}</div>`:''}
-      ${messageAttachmentHtml(m)}
-      <div class="chat-time">${fmtDate((m.sentAt||'').slice(0,10))}</div>
-    </div>`).join('') : '<div class="empty">No messages yet — say hello.</div>'}
-  </div>
-  <form id="modal-form" class="chat-input-row">
-    <textarea id="f-message-body" placeholder="Type a reply…"></textarea>
-    <input type="file" id="f-message-file" title="Attach a file">
-    <button type="submit" class="btn btn-gold btn-sm">Send</button>
+    <div class="field"><label>Send to</label><select id="f-message-to" required><option value="">Choose recipient</option>${users.map(u=>`<option value="${u.id}">${esc(u.name)} (${esc(u.role)})</option>`).join('')}</select></div>
+    <div class="field"><label>Subject</label><input type="text" id="f-message-subject" required></div>
+    <div class="field"><label>Message</label><textarea id="f-message-body" required></textarea></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button><button type="submit" class="btn btn-gold">Send message</button></div>
   </form>
-  <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
+  <div class="message-list">
+    ${messages.length ? messages.map(msg=>{
+      const other = getUser(msg.fromId===user.id ? msg.toId : msg.fromId);
+      const direction = msg.fromId===user.id ? 'To' : 'From';
+      return `<div class="message-item"><div class="row1"><b>${esc(msg.subject)}</b><span>${fmtDate((msg.sentAt||'').slice(0,10))}</span></div><div class="meta">${direction} ${esc(other ? other.name : 'Unknown user')}</div><div>${esc(msg.body)}</div></div>`;
+    }).join('') : '<div class="empty">No messages yet.</div>'}
+  </div>`;
 }
 function modalProfileEnhanced(){
   const user = state.currentUser;
@@ -1393,38 +1187,8 @@ function readFileAsDataUrl(file){
     reader.readAsDataURL(file);
   });
 }
-function attachMessagesModalHandlers(){
-  if(!state.modal.payload) state.modal.payload = {view:'list'};
-  document.querySelectorAll('[data-open-thread]').forEach(btn=>btn.onclick=()=>{ state.modal.payload = {view:'thread', otherId: btn.dataset.openThread}; renderModal(); });
-  const nb = document.getElementById('new-message-btn'); if(nb) nb.onclick = ()=>{ state.modal.payload = {view:'compose', search:'', recipientId:null}; renderModal(); };
-  const back = document.getElementById('back-to-list'); if(back) back.onclick = ()=>{ state.modal.payload = {view:'list'}; renderModal(); };
-  const clearR = document.getElementById('clear-recipient'); if(clearR) clearR.onclick = ()=>{ state.modal.payload.recipientId = null; renderModal(); };
-  const wireSuggestions = ()=>{
-    document.querySelectorAll('[data-pick-recipient]').forEach(el=>el.onclick=()=>{ state.modal.payload.recipientId = el.dataset.pickRecipient; renderModal(); });
-  };
-  wireSuggestions();
-  const searchInput = document.getElementById('f-message-to-search');
-  if(searchInput){
-    searchInput.focus();
-    const pos = searchInput.value.length;
-    searchInput.setSelectionRange(pos, pos);
-    searchInput.oninput = ()=>{
-      const val = searchInput.value;
-      state.modal.payload.search = val;
-      const box = document.getElementById('recipient-suggestions');
-      if(box){
-        const candidates = val ? db.users.filter(u=>u.id!==state.currentUser.id && u.name.toLowerCase().includes(val.toLowerCase())).slice(0,6) : [];
-        box.innerHTML = candidates.map(u=>`<div class="notification-item" data-pick-recipient="${u.id}"><b>${esc(u.name)}</b> <span class="meta">${esc(u.role)}</span></div>`).join('');
-        wireSuggestions();
-      }
-    };
-  }
-  const thread = document.querySelector('.chat-thread');
-  if(thread) thread.scrollTop = thread.scrollHeight;
-}
 function attachModalHandlers(type){
   const cancel = document.getElementById('modal-cancel'); if(cancel) cancel.onclick = closeModal;
-  if(type==='messages') attachMessagesModalHandlers();
   if(type==='viewSubmissions'){
     document.querySelectorAll('[data-toggle-answer]').forEach(btn=>{
       btn.onclick = ()=>{
@@ -1483,25 +1247,12 @@ function attachModalHandlers(type){
       if(password) user.password = password;
       await saveDB(); closeModal(); showToast('Settings updated.');
     } else if(type==='messages'){
-      const payload = state.modal.payload;
-      const toId = payload.view==='compose' ? payload.recipientId : payload.otherId;
-      const bodyInput = document.getElementById('f-message-body');
-      const body = bodyInput ? bodyInput.value.trim() : '';
-      const fileInput = document.getElementById('f-message-file');
-      const file = fileInput && fileInput.files ? fileInput.files[0] : null;
-      if(!toId){ alert('Choose a recipient first.'); return; }
-      if(!body && !file){ alert('Write a message or attach a file.'); return; }
-      if(file && file.size > 4 * 1024 * 1024){ alert('That file is too large (about ' + fmtFileSize(file.size) + '). Please keep it under ~4MB.'); return; }
-      let attachment = null;
-      if(file){
-        try{ attachment = { name:file.name, size:file.size, mimeType:file.type, dataUrl: await readFileAsDataUrl(file) }; }
-        catch(err){ console.error('message attachment read failed', err); alert('That file could not be read. Please try again.'); return; }
-      }
-      db.messages.push({ id:uid('msg'), fromId:state.currentUser.id, toId, body, attachment, sentAt:new Date().toISOString() });
-      await saveDB();
-      showToast('Message sent.');
-      state.modal.payload = { view:'thread', otherId: toId };
-      renderModal();
+      const toId = document.getElementById('f-message-to').value;
+      const subject = document.getElementById('f-message-subject').value.trim();
+      const body = document.getElementById('f-message-body').value.trim();
+      if(!toId || !subject || !body){ alert('Complete the message before sending.'); return; }
+      db.messages.push({ id:uid('msg'), fromId:state.currentUser.id, toId, subject, body, sentAt:new Date().toISOString() });
+      await saveDB(); closeModal(); showToast('Message sent.');
     } else if(type==='profile'){
       const user = state.currentUser;
       const email = document.getElementById('f-profile-email').value.trim().toLowerCase();
@@ -1614,15 +1365,6 @@ function attachModalHandlers(type){
       if(db.subjects.some(subject=>subject.name.toLowerCase()===name.toLowerCase())){ alert('That subject already exists.'); return; }
       db.subjects.push({ id:uid('sub'), code, name, active:true });
       await saveDB(); closeModal(); showToast('Subject created.');
-    } else if(type==='addBehavior'){
-      const studentId = document.getElementById('f-behavior-student').value;
-      const btype = document.getElementById('f-behavior-type').value;
-      const category = document.getElementById('f-behavior-category').value.trim();
-      const note = document.getElementById('f-behavior-note').value.trim();
-      const date = document.getElementById('f-behavior-date').value || new Date().toISOString().slice(0,10);
-      if(!studentId){ alert('Choose a student.'); return; }
-      db.behavior.push({ id:uid('beh'), studentId, classId: state.modal.payload.classId, type:btype, category, note, date, recordedBy: state.currentUser.id });
-      await saveDB(); closeModal(); showToast('Behavior record saved.');
     } else if(type==='assignSubject'){
       const subjectId = document.getElementById('f-subject').value;
       const teacherId = document.getElementById('f-subject-teacher').value;
