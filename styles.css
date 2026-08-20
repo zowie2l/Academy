@@ -16,8 +16,8 @@
     --radius:10px;
     --shadow: 0 8px 24px rgba(15,32,56,0.10);
   }
-  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
-  html,body{margin:0;padding:0;height:100%; overflow-x:hidden; width:100%;}
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
   body{
     font-family:'Source Sans 3', sans-serif;
     background:var(--parchment);
@@ -28,8 +28,7 @@
   .mono{font-family:'IBM Plex Mono', monospace;}
   #app{min-height:100vh;}
   button{font-family:inherit; cursor:pointer;}
-  /* 16px min on form fields — anything smaller triggers unwanted auto-zoom on iOS Safari when focused */
-  input,select,textarea{font-family:inherit; font-size:1rem;}
+  input,select,textarea{font-family:inherit; font-size:0.95rem;}
 
   /* ---------- School logo ---------- */
   .school-logo{
@@ -102,23 +101,10 @@
 
   /* ---------- Dashboard shell ---------- */
   .shell{display:grid; grid-template-columns:250px 1fr; min-height:100vh;}
-  .sidebar-backdrop{display:none;}
+  @media (max-width:780px){ .shell{grid-template-columns:1fr;} .sidebar{display:none;} .sidebar.open{display:flex;} }
   .sidebar{
     background:var(--ink-navy); color:var(--parchment); display:flex; flex-direction:column;
-    padding:22px 16px; padding-top:calc(22px + env(safe-area-inset-top)); position:sticky; top:0; height:100vh; height:100dvh;
-  }
-  @media (max-width:780px){
-    .shell{grid-template-columns:1fr;}
-    .sidebar{
-      display:none; position:fixed; inset:0 22% 0 0; z-index:150; height:100vh; height:100dvh;
-      box-shadow:0 0 40px rgba(0,0,0,0.35);
-      transform:translateX(-100%); transition:transform .2s ease;
-    }
-    .sidebar.open{display:flex; transform:translateX(0);}
-    .sidebar-backdrop{
-      display:none; position:fixed; inset:0; background:rgba(10,23,40,0.55); z-index:140;
-    }
-    .sidebar-backdrop.open{display:block;}
+    padding:22px 16px; position:sticky; top:0; height:100vh;
   }
   .sidebar-brand{display:flex; align-items:center; gap:10px; padding:6px 8px 22px 8px; border-bottom:1px solid rgba(246,241,228,0.12); margin-bottom:18px;}
   .sidebar-brand .school-logo{width:42px; height:42px;}
@@ -140,7 +126,7 @@
   .topbar h2{font-size:1.5rem; color:var(--ink-navy);}
   .topbar .desc{color:var(--slate); font-size:0.9rem; margin-top:5px;}
 
-  .card{background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow); overflow-x:auto;}
+  .card{background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow);}
   .grid{display:grid; gap:18px;}
   .grid-3{grid-template-columns:repeat(3,1fr);}
   .grid-2{grid-template-columns:repeat(2,1fr);}
@@ -171,7 +157,6 @@
   .empty .glyph{font-size:1.8rem; margin-bottom:8px;}
 
   .class-chip{padding:14px 16px; border:1.5px solid var(--line); border-radius:9px; background:var(--paper); cursor:pointer; text-align:left; width:100%;}
-  .class-chip-grid{display:grid; gap:18px; grid-template-columns:repeat(var(--chip-cols,4),1fr);}
   .class-chip:hover{border-color:var(--gold-deep);}
   .class-chip.active{border-color:var(--gold); background:#FBF3DD;}
   .class-chip .g{font-family:'Fraunces',serif; font-size:1.05rem; color:var(--ink-navy);}
@@ -213,7 +198,7 @@
   .attachment-chip:hover{border-color:var(--gold-deep); background:#FBF3DD;}
   .attachment-chip span{font-weight:400; color:var(--slate);}
 
-  .toast{position:fixed; bottom:24px; bottom:calc(24px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%); background:var(--ink-navy); color:var(--parchment); padding:12px 22px; border-radius:8px; font-size:0.87rem; box-shadow:var(--shadow); z-index:200; max-width:calc(100vw - 32px); text-align:center;}
+  .toast{position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--ink-navy); color:var(--parchment); padding:12px 22px; border-radius:8px; font-size:0.87rem; box-shadow:var(--shadow); z-index:200;}
   .icon-btn{background:transparent; border:none; color:var(--slate); font-size:1rem; padding:4px;}
   .menu-toggle{display:none; background:var(--ink-navy); color:var(--parchment); border:none; padding:10px 14px; border-radius:7px; margin-bottom:16px; font-weight:600;}
   .account-tools{display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-bottom:18px; min-height:42px;}
@@ -236,21 +221,31 @@
   .check-row{display:flex; align-items:center; gap:8px; color:var(--slate); font-size:0.88rem;}
   .check-row input{width:auto;}
   @media (max-width:780px){
-    .menu-toggle{display:inline-flex; min-height:42px;}
+    .menu-toggle{display:inline-flex;}
     .account-tools{margin-bottom:12px;}
     .profile-name{display:none;}
-    .class-chip-grid{grid-template-columns:repeat(2,1fr);}
-    .nav-item{padding:13px 12px; font-size:0.92rem;}
-    .modal{padding:22px 18px 18px;}
   }
-  @media (max-width:480px){
-    .class-chip-grid{grid-template-columns:1fr;}
-    .att-grid{grid-template-columns:1fr repeat(3, 1fr); gap:5px;}
-    .att-btn{font-size:0.68rem; padding:8px 0;}
-    .modal-bg{padding:12px;}
-    .modal{padding:18px 14px 16px; border-radius:10px;}
-    .card{padding:16px;}
-    .topbar h2{font-size:1.3rem;}
-    .stat-card .num{font-size:1.6rem;}
-    .score-input{width:56px;}
-  }
+
+  /* ---------- Messages: conversation list / thread / compose ---------- */
+  .conversation-row{display:block; width:100%; text-align:left; background:none; border:none; cursor:pointer; padding:12px 4px; border-bottom:1px solid var(--line);}
+  .conversation-row:hover{background:#F3EDDD;}
+  #recipient-suggestions{border:1.5px solid var(--line); border-radius:7px; margin-top:6px; max-height:180px; overflow-y:auto; background:var(--paper);}
+  #recipient-suggestions .notification-item{padding:9px 12px !important; margin:0; border-bottom:1px solid var(--line); cursor:pointer;}
+  #recipient-suggestions .notification-item:last-child{border-bottom:none;}
+  #recipient-suggestions .notification-item:hover{background:#F3EDDD;}
+  .chat-thread{max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:6px 4px; margin-bottom:14px; border:1px solid var(--line); border-radius:9px; background:var(--parchment);}
+  .chat-bubble{max-width:78%; padding:9px 13px; border-radius:14px; font-size:0.87rem; line-height:1.45;}
+  .chat-bubble.theirs{align-self:flex-start; background:#EFE7D2; color:var(--ink); border-bottom-left-radius:4px;}
+  .chat-bubble.mine{align-self:flex-end; background:var(--ink-navy); color:var(--parchment); border-bottom-right-radius:4px;}
+  .chat-bubble .chat-time{font-size:0.66rem; opacity:0.65; margin-top:4px;}
+  .chat-bubble.mine .attachment-chip{background:rgba(246,241,228,0.14); color:var(--parchment); border-color:rgba(246,241,228,0.35);}
+  .chat-input-row{display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;}
+  .chat-input-row textarea{flex:1; min-height:44px; max-height:100px; min-width:160px;}
+  .chat-input-row input[type=file]{max-width:130px; font-size:0.72rem;}
+
+  /* ---------- Simple CSS bar charts ---------- */
+  .bar-chart{display:flex; align-items:flex-end; gap:10px; height:150px; padding:10px 4px 0; overflow-x:auto;}
+  .bar-chart .bar-col{flex:1 0 46px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; min-width:46px;}
+  .bar-chart .bar{width:100%; max-width:36px; border-radius:5px 5px 0 0; background:var(--gold); min-height:3px; transition:height .3s;}
+  .bar-chart .bar-val{font-size:0.7rem; font-weight:700; color:var(--ink-navy); margin-bottom:3px;}
+  .bar-chart .bar-label{font-size:0.68rem; color:var(--slate); margin-top:6px; text-align:center; line-height:1.25; max-width:76px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
