@@ -220,6 +220,24 @@
   .message-item .meta{margin:4px 0 6px;}
   .check-row{display:flex; align-items:center; gap:8px; color:var(--slate); font-size:0.88rem;}
   .check-row input{width:auto;}
+
+  /* ---------- Recipient picker (message "Send to") ---------- */
+  .recipient-picker{position:relative;}
+  .recipient-suggestions{position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:20; background:var(--paper); border:1.5px solid var(--line); border-radius:8px; box-shadow:var(--shadow); max-height:220px; overflow-y:auto;}
+  .recipient-suggestion{display:flex; align-items:center; gap:10px; width:100%; padding:9px 12px; background:none; border:none; text-align:left; border-bottom:1px solid var(--line);}
+  .recipient-suggestion:last-child{border-bottom:none;}
+  .recipient-suggestion:hover{background:var(--parchment);}
+  .recipient-suggestion-info{display:flex; flex-direction:column; gap:2px; line-height:1.2;}
+  .recipient-suggestion-info b{font-size:0.9rem; color:var(--ink);}
+  .recipient-suggestion-info .meta{font-size:0.76rem; color:var(--slate); text-transform:capitalize;}
+  .recipient-suggestion-empty{padding:10px 12px; font-size:0.85rem; color:var(--slate);}
+  .recipient-selected{display:flex;}
+  .recipient-chip{display:flex; align-items:center; gap:10px; width:100%; padding:9px 12px; border:1.5px solid var(--line); border-radius:8px; background:var(--parchment);}
+  .recipient-chip-info{display:flex; flex-direction:column; gap:2px; line-height:1.2; flex:1;}
+  .recipient-chip-info b{font-size:0.9rem; color:var(--ink);}
+  .recipient-chip-info .meta{font-size:0.76rem; color:var(--slate); text-transform:capitalize;}
+  .recipient-change{background:none; border:none; color:var(--gold-deep); font-weight:600; font-size:0.8rem; padding:4px 6px;}
+  .recipient-change:hover{text-decoration:underline;}
   @media (max-width:780px){
     .menu-toggle{display:inline-flex;}
     .account-tools{margin-bottom:12px;}
