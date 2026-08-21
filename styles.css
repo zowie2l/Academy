@@ -184,6 +184,15 @@
   .mat-item .meta{font-size:0.78rem; color:var(--slate); margin-top:4px;}
   .mat-item .desc{font-size:0.87rem; color:var(--ink); margin-top:9px; line-height:1.55;}
 
+  .period-strip{display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;}
+  .period-chip{padding:10px 14px; border:1.5px solid var(--line); border-radius:9px; background:var(--paper); cursor:pointer; text-align:left; min-width:130px;}
+  .period-chip:hover{border-color:var(--gold-deep);}
+  .period-chip.active{border-color:var(--gold); background:#FBF3DD;}
+  .period-chip.now{border-color:var(--gold-deep); box-shadow:0 0 0 1px var(--gold-deep) inset;}
+  .period-chip .time{font-size:0.72rem; color:var(--gold-deep); font-weight:600;}
+  .period-chip .subj{font-size:0.87rem; font-weight:600; color:var(--ink-navy); margin-top:2px;}
+  .period-chip .room{font-size:0.74rem; color:var(--slate); margin-top:2px;}
+
   .att-grid{display:grid; grid-template-columns: 1fr repeat(3, 100px); gap:6px; align-items:center;}
   .att-head{font-size:0.72rem; text-transform:uppercase; color:var(--slate); letter-spacing:0.5px; padding-bottom:8px;}
   .att-toggle{display:flex; gap:4px;}
