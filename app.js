@@ -37,6 +37,7 @@ let state = {
   selectedClassId: null,
   selectedClassSubjectId: null,
   selectedStudentSubjectId: null,
+  attendanceSlotId: null,
   modal: null,
   sidebarOpen: false,
   toast: null,
@@ -214,6 +215,7 @@ function schedulesOfTeacher(teacherId){
   return db.schedules.filter(s=>csIds.includes(s.classSubjectId));
 }
 function todayDayName(){ const idx = new Date().getDay()-1; return idx>=0 && idx<SCHOOL_DAYS.length ? SCHOOL_DAYS[idx] : null; }
+function currentTimeStr(){ const now = new Date(); return String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0'); }
 function fmtTime(t){
   if(!t) return '—';
   const [h,m] = t.split(':').map(Number);
@@ -809,7 +811,7 @@ function renderTeacherMain(){
       <div class="g">${esc(c.grade)}</div><div class="s">${esc(c.section)} · ${studentsOfClass(c.id).length} students</div>
     </button>`).join('')}
   </div>
-  ${teacherSubjects.length ? `<div class="subject-tabs">${teacherSubjects.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedClassSubjectId?'active':''}" data-select-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : ''}
+  ${teacherSubjects.length && tab!=='attendance' ? `<div class="subject-tabs">${teacherSubjects.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedClassSubjectId?'active':''}" data-select-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : ''}
   ${body}`;
 }
 function tabTitleTeacher(tab){
@@ -864,13 +866,56 @@ function renderTeacherPost(cls){
   `;
 }
 function renderTeacherAttendance(cls){
+  const teacherId = state.currentUser.id;
+  const teacherCsIds = subjectAssignmentsOfClass(cls.id).filter(cs=>cs.teacherId===teacherId).map(cs=>cs.id);
+  const dayName = todayDayName();
+  const todaysSlots = dayName ? db.schedules.filter(s=>teacherCsIds.includes(s.classSubjectId) && s.day===dayName).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')) : [];
+
+  if(!todaysSlots.length){
+    return `<div class="card empty"><div class="glyph">🗓️</div>You have no class with ${classLabel(cls)} today${dayName?` (${dayName})`:' — no school today'}. There is nothing to take attendance for.</div>
+    <div class="card" style="margin-top:18px;">
+      <div class="section-title">Your weekly schedule for ${classLabel(cls)}</div>
+      ${renderWeekGrid(schedulesOfClass(cls.id).filter(s=>teacherCsIds.includes(s.classSubjectId)), {})}
+    </div>`;
+  }
+
+  const nowStr = currentTimeStr();
+  const nowSlot = todaysSlots.find(s=>s.startTime<=nowStr && nowStr<s.endTime) || null;
+  let activeSlot = todaysSlots.find(s=>s.id===state.attendanceSlotId);
+  if(!activeSlot) activeSlot = nowSlot || todaysSlots[0];
+  state.attendanceSlotId = activeSlot.id;
+  const activeCs = getClassSubject(activeSlot.classSubjectId);
+  const activeSubject = activeCs ? getSubject(activeCs.subjectId) : null;
+
   const students = studentsOfClass(cls.id);
   const today = new Date().toISOString().slice(0,10);
-  const existing = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===state.selectedClassSubjectId && a.date===today);
+  const existing = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===activeCs.id && a.date===today);
   const records = existing ? existing.records : {};
+
   return `
+  <div class="card" style="margin-bottom:18px;">
+    <div class="section-title">Today's schedule — ${dayName}</div>
+    <div class="helper">Pick a period below to take or review its attendance. The period happening right now is marked <b>Now</b>.</div>
+    <div class="period-strip">
+      ${todaysSlots.map(s=>{
+        const cs = getClassSubject(s.classSubjectId);
+        const subject = cs ? getSubject(cs.subjectId) : null;
+        const isNow = nowSlot && s.id===nowSlot.id;
+        const isActive = s.id===activeSlot.id;
+        return `<button type="button" class="period-chip ${isActive?'active':''} ${isNow?'now':''}" data-select-period="${s.id}">
+          <div class="mono time">${fmtTime(s.startTime)}–${fmtTime(s.endTime)}</div>
+          <div class="subj">${esc(subject ? subject.name : 'Unknown subject')}</div>
+          ${s.room ? `<div class="room">Room ${esc(s.room)}</div>` : ''}
+          ${isNow ? '<span class="pill pill-gold" style="margin-top:6px;">Now</span>' : ''}
+        </button>`;
+      }).join('')}
+    </div>
+  </div>
   <div class="card">
-    <div class="section-title">Record attendance — <span class="mono" style="font-weight:600;">${fmtDate(today)}</span></div>
+    <div class="section-title">Record attendance — ${esc(activeSubject ? activeSubject.name : 'Unknown subject')}
+      <span class="mono" style="font-weight:600;">${fmtDate(today)}</span>
+      ${nowSlot && nowSlot.id===activeSlot.id ? '<span class="pill pill-gold">In progress</span>' : ''}
+    </div>
     ${students.length===0 ? `<div class="empty">No students enrolled in this section yet.</div>` : `
     <div class="att-grid" style="margin-bottom:6px;">
       <div class="att-head">Student</div><div class="att-head" style="text-align:center;">Present</div><div class="att-head" style="text-align:center;">Late</div><div class="att-head" style="text-align:center;">Absent</div>
@@ -884,13 +929,13 @@ function renderTeacherAttendance(cls){
         <button class="att-btn a ${cur==='absent'?'sel':''}" data-att="${s.id}" data-status="absent">✕</button>
       </div>`;
     }).join('')}
-    <div style="margin-top:16px;"><button class="btn btn-gold" id="save-attendance-btn">Save today's attendance</button></div>
+    <div style="margin-top:16px;"><button class="btn btn-gold" id="save-attendance-btn" data-attendance-cs="${activeCs.id}">Save attendance for this period</button></div>
     `}
   </div>
   <div class="card" style="margin-top:18px;">
-    <div class="section-title">Recent attendance history</div>
+    <div class="section-title">Recent attendance history — ${esc(activeSubject ? activeSubject.name : '')}</div>
     <table><thead><tr><th>Date</th><th>Present</th><th>Late</th><th>Absent</th></tr></thead>
-    <tbody>${db.attendance.filter(a=>a.classId===cls.id && (!state.selectedClassSubjectId || a.classSubjectId===state.selectedClassSubjectId || !a.classSubjectId)).sort((a,b)=>b.date.localeCompare(a.date)).map(a=>{
+    <tbody>${db.attendance.filter(a=>a.classId===cls.id && a.classSubjectId===activeCs.id).sort((a,b)=>b.date.localeCompare(a.date)).map(a=>{
       const vals = Object.values(a.records);
       return `<tr><td>${fmtDate(a.date)}</td><td>${vals.filter(v=>v==='present').length}</td><td>${vals.filter(v=>v==='late').length}</td><td>${vals.filter(v=>v==='absent').length}</td></tr>`;
     }).join('') || `<tr><td colspan="4" class="empty">No attendance recorded yet.</td></tr>`}</tbody></table>
@@ -939,8 +984,9 @@ function renderTeacherBehavior(cls){
   }).join('') : `<div class="card empty"><div class="glyph">📝</div>No behavior notes recorded for this section yet.</div>`}`;
 }
 function attachTeacherHandlers(){
-  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.teacherTab = 'roster'; render(); });
+  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.attendanceSlotId = null; state.teacherTab = 'roster'; render(); });
   document.querySelectorAll('[data-select-subject]').forEach(b=>b.onclick=()=>{ state.selectedClassSubjectId = b.dataset.selectSubject; render(); });
+  document.querySelectorAll('[data-select-period]').forEach(b=>b.onclick=()=>{ state.attendanceSlotId = b.dataset.selectPeriod; render(); });
   const pw = document.getElementById('post-work-btn'); if(pw) pw.onclick=()=>openModal('postWork');
   document.querySelectorAll('[data-view-submissions]').forEach(b=>b.onclick=()=>openModal('viewSubmissions', {materialId: b.dataset.viewSubmissions}));
   document.querySelectorAll('[data-remove-mat]').forEach(b=>b.onclick=async ()=>{
@@ -961,9 +1007,10 @@ function attachTeacherHandlers(){
   const sab = document.getElementById('save-attendance-btn');
   if(sab) sab.onclick = async ()=>{
     const cls = getClass(state.selectedClassId);
+    const attendanceCsId = sab.dataset.attendanceCs;
     const today = new Date().toISOString().slice(0,10);
-    let rec = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===state.selectedClassSubjectId && a.date===today);
-    if(!rec){ rec = { id: uid('a'), classId: cls.id, classSubjectId: state.selectedClassSubjectId, date: today, records:{} }; db.attendance.push(rec); }
+    let rec = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===attendanceCsId && a.date===today);
+    if(!rec){ rec = { id: uid('a'), classId: cls.id, classSubjectId: attendanceCsId, date: today, records:{} }; db.attendance.push(rec); }
     document.querySelectorAll('[data-student-row]').forEach(row=>{
       const sel = row.querySelector('.att-btn.sel');
       if(sel) rec.records[row.dataset.studentRow] = sel.dataset.status;
