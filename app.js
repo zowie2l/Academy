@@ -15,6 +15,7 @@ const GRADE_OPTIONS = {
   'College': ['1st Year','2nd Year','3rd Year','4th Year'],
 };
 const STUDENT_TYPE_LEVELS = ['Senior High School', 'College']; // levels that track Regular / Irregular
+const SCHOOL_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
 const SUPABASE_URL = "https://wcowyknjsjellpcubsam.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_FYjHNYr3EUAnJeV03Ibu9g_f4BmX7EX";
@@ -30,6 +31,7 @@ let state = {
   view: 'login',
   adminTab: 'overview',
   adminClassLevel: 'All',
+  adminScheduleClassId: null,
   teacherTab: 'roster',
   studentTab: 'overview',
   selectedClassId: null,
@@ -71,6 +73,7 @@ function defaultDB(){
     behavior: [],
     messages: [],
     submissions: [],
+    schedules: [],
   };
 }
 
@@ -104,6 +107,7 @@ function normalizeDB(data){
   data.subjects = Array.isArray(data.subjects) ? data.subjects : [];
   data.classSubjects = Array.isArray(data.classSubjects) ? data.classSubjects : [];
   data.submissions = Array.isArray(data.submissions) ? data.submissions : [];
+  data.schedules = Array.isArray(data.schedules) ? data.schedules : [];
   data.classes.forEach(cls=>{ if(!EDU_LEVELS.includes(cls.level)) cls.level = inferLevelFromGrade(cls.grade); });
   const exampleUsernames = new Set(['teacher1','teacher2','student1','student2','student3','student4']);
   const removedUserIds = new Set(data.users.filter(user=>exampleUsernames.has(user.username)).map(user=>user.id));
@@ -119,6 +123,7 @@ function normalizeDB(data){
   data.grades = data.grades.filter(grade=>!removedClassIds.has(grade.classId) && !removedUserIds.has(grade.studentId) && !removedMaterialIds.has(grade.materialId));
   data.behavior = data.behavior.filter(entry=>!removedClassIds.has(entry.classId) && !removedUserIds.has(entry.studentId));
   data.submissions = data.submissions.filter(sub=>!removedUserIds.has(sub.studentId) && !removedMaterialIds.has(sub.materialId));
+  data.schedules = data.schedules.filter(sch=>!removedClassSubjectIds.has(sch.classSubjectId));
   data.users.forEach(user=>{
     if(!user.email) user.email = user.username || '';
   });
@@ -200,6 +205,49 @@ function getSubject(id){ return db.subjects.find(s=>s.id===id); }
 function getClassSubject(id){ return db.classSubjects.find(cs=>cs.id===id); }
 function subjectAssignmentsOfClass(classId){ return db.classSubjects.filter(cs=>cs.classId===classId && getSubject(cs.subjectId)); }
 function subjectAssignmentsOfTeacher(teacherId){ return db.classSubjects.filter(cs=>cs.teacherId===teacherId && getSubject(cs.subjectId)); }
+function schedulesOfClass(classId){
+  const csIds = subjectAssignmentsOfClass(classId).map(cs=>cs.id);
+  return db.schedules.filter(s=>csIds.includes(s.classSubjectId));
+}
+function schedulesOfTeacher(teacherId){
+  const csIds = subjectAssignmentsOfTeacher(teacherId).map(cs=>cs.id);
+  return db.schedules.filter(s=>csIds.includes(s.classSubjectId));
+}
+function todayDayName(){ const idx = new Date().getDay()-1; return idx>=0 && idx<SCHOOL_DAYS.length ? SCHOOL_DAYS[idx] : null; }
+function fmtTime(t){
+  if(!t) return '—';
+  const [h,m] = t.split(':').map(Number);
+  const period = h>=12 ? 'PM' : 'AM';
+  const h12 = ((h+11)%12)+1;
+  return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+}
+function renderWeekGrid(schedules, opts){
+  const options = opts || {};
+  return `<div class="week-grid">
+    ${SCHOOL_DAYS.map(day=>{
+      const items = schedules.filter(s=>s.day===day).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
+      return `<div class="week-day-col ${day===todayDayName()?'today':''}">
+        <div class="week-day-head">${day}${day===todayDayName()?' <span class="pill pill-gold">Today</span>':''}</div>
+        ${items.length ? items.map(s=>{
+          const cs = getClassSubject(s.classSubjectId);
+          const subject = cs ? getSubject(cs.subjectId) : null;
+          const teacher = cs ? getUser(cs.teacherId) : null;
+          const cls = cs ? getClass(cs.classId) : null;
+          const metaParts = [];
+          if(options.showTeacher && teacher) metaParts.push(esc(teacher.name));
+          if(options.showClass && cls) metaParts.push(esc(classLabel(cls)));
+          if(s.room) metaParts.push('Room '+esc(s.room));
+          return `<div class="week-slot">
+            <div class="week-slot-time mono">${fmtTime(s.startTime)}–${fmtTime(s.endTime)}</div>
+            <div class="week-slot-subject">${esc(subject ? subject.name : 'Unknown subject')}</div>
+            ${metaParts.length ? `<div class="week-slot-meta">${metaParts.join(' · ')}</div>` : ''}
+            ${options.removable ? `<button type="button" class="week-slot-remove" data-remove-schedule="${s.id}" title="Remove">&times;</button>` : ''}
+          </div>`;
+        }).join('') : '<div class="week-day-empty">No classes.</div>'}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
 function classesOfTeacher(teacherId){
   const ids = new Set(subjectAssignmentsOfTeacher(teacherId).map(cs=>cs.classId));
   return db.classes.filter(c=>c.teacherId===teacherId || ids.has(c.id));
@@ -348,13 +396,13 @@ function renderShell(mainHTML, role){
   const navItems = {
     admin: [
       ['overview','Overview'],['teachers','Teachers'],['students','Students'],
-      ['classes','Classes & Sections'],['subjects','Subjects / Courses'],['evaluations','Evaluations'],
+      ['classes','Classes & Sections'],['subjects','Subjects / Courses'],['schedule','Schedule'],['evaluations','Evaluations'],
     ],
     teacher: [
-      ['overview','Overview'],['roster','My Classes'],['post','Post Work'],['attendance','Attendance'],['gradebook','Gradebook'],['behavior','Behavior'],
+      ['overview','Overview'],['roster','My Classes'],['post','Post Work'],['attendance','Attendance'],['gradebook','Gradebook'],['behavior','Behavior'],['schedule','Schedule'],
     ],
     student: [
-      ['overview','Overview'],['grades','My Grades'],['behavior','Behavior'],['subjects','Subjects / Courses'],['work','Class Work'],
+      ['overview','Overview'],['grades','My Grades'],['behavior','Behavior'],['subjects','Subjects / Courses'],['work','Class Work'],['schedule','Schedule'],
     ],
   };
   const activeTab = role==='admin'?state.adminTab: role==='teacher'?state.teacherTab: state.studentTab;
@@ -461,6 +509,7 @@ function renderAdminMain(){
   else if(tab==='students') body = renderAdminStudents();
   else if(tab==='classes') body = renderAdminClasses();
   else if(tab==='subjects') body = renderAdminSubjects();
+  else if(tab==='schedule') body = renderAdminSchedule();
   else if(tab==='evaluations') body = renderAdminEvaluations();
   return `
   <div class="topbar">
@@ -469,7 +518,7 @@ function renderAdminMain(){
   ${body}`;
 }
 function titleFor(tab){
-  return {overview:'Overview', teachers:'Teachers', students:'Students', classes:'Classes & Sections', subjects:'Subjects / Courses', evaluations:'Evaluations'}[tab];
+  return {overview:'Overview', teachers:'Teachers', students:'Students', classes:'Classes & Sections', subjects:'Subjects / Courses', schedule:'Schedule', evaluations:'Evaluations'}[tab];
 }
 function descFor(tab){
   return {
@@ -478,6 +527,7 @@ function descFor(tab){
     students:'Create student accounts and enroll them into a section.',
     classes:'Open grade levels and sections, and see who is assigned to each.',
     subjects:'Create the subjects or courses that teachers will teach and students will see.',
+    schedule:'Set the Monday–Saturday class schedule for each section.',
     evaluations:'Review grades and attendance across every class — useful for resolving disputes or errors.',
   }[tab];
 }
@@ -600,6 +650,24 @@ function renderAdminSubjects(){
     <tbody>${db.subjects.map(subject=>`<tr><td class="mono">${esc(subject.code||'—')}</td><td><b>${esc(subject.name)}</b></td><td>${db.classSubjects.filter(cs=>cs.subjectId===subject.id).length}</td><td><button class="btn btn-ghost btn-sm" data-remove-subject="${subject.id}">Remove</button></td></tr>`).join('') || '<tr><td colspan="4" class="empty">No subjects yet.</td></tr>'}</tbody></table>
   </div>`;
 }
+function renderAdminSchedule(){
+  const classes = db.classes;
+  if(!classes.length) return `<div class="card empty"><div class="glyph">🗓️</div>Create a class section first, then set its weekly schedule here.</div>`;
+  if(!state.adminScheduleClassId || !classes.find(c=>c.id===state.adminScheduleClassId)) state.adminScheduleClassId = classes[0].id;
+  const cls = getClass(state.adminScheduleClassId);
+  const assignments = subjectAssignmentsOfClass(cls.id);
+  return `
+  <div class="card" style="margin-bottom:18px;">
+    <div class="section-title">Choose a section</div>
+    <select id="schedule-class-select" style="max-width:340px;">
+      ${classes.map(c=>`<option value="${c.id}" ${c.id===cls.id?'selected':''}>${esc(classLabel(c))}</option>`).join('')}
+    </select>
+  </div>
+  <div class="card">
+    <div class="section-title">Weekly schedule — ${classLabel(cls)}${assignments.length ? ` <button class="btn btn-gold btn-sm" id="add-schedule-btn">+ Add schedule slot</button>` : ''}</div>
+    ${!assignments.length ? '<div class="empty">Assign subjects to this section first, under Classes &amp; Sections.</div>' : renderWeekGrid(schedulesOfClass(cls.id), {showTeacher:true, removable:true})}
+  </div>`;
+}
 function renderAdminEvaluations(){
   const students = db.users.filter(u=>u.role==='student');
   return `
@@ -650,6 +718,15 @@ function attachAdminHandlers(){
   const as = document.getElementById('add-student-btn'); if(as) as.onclick = ()=>openModal('addStudent');
   const ac = document.getElementById('add-class-btn'); if(ac) ac.onclick = ()=>openModal('addClass');
   document.querySelectorAll('[data-select-level]').forEach(b=>b.onclick=()=>{ state.adminClassLevel = b.dataset.selectLevel; render(); });
+  const scheduleSel = document.getElementById('schedule-class-select');
+  if(scheduleSel) scheduleSel.onchange = ()=>{ state.adminScheduleClassId = scheduleSel.value; render(); };
+  const addSchedule = document.getElementById('add-schedule-btn');
+  if(addSchedule) addSchedule.onclick = ()=>openModal('addSchedule', {classId: state.adminScheduleClassId});
+  document.querySelectorAll('[data-remove-schedule]').forEach(b=>b.onclick=async ()=>{
+    if(!confirm('Remove this schedule slot?')) return;
+    db.schedules = db.schedules.filter(s=>s.id!==b.dataset.removeSchedule);
+    await saveDB(); render();
+  });
   const addSubject = document.getElementById('add-subject-btn'); if(addSubject) addSubject.onclick = ()=>openModal('addSubject');
   document.querySelectorAll('[data-edit-user]').forEach(btn=>btn.onclick=()=>openModal('editUser', {userId:btn.dataset.editUser}));
   document.querySelectorAll('[data-remove-teacher]').forEach(b=>b.onclick=async ()=>{
@@ -706,6 +783,10 @@ function renderTeacherMain(){
   if(!cls.length){
     return `<div class="topbar"><div><h2>Overview</h2><div class="desc">Your teaching snapshot</div></div></div>${renderTeacherOverview([])}`;
   }
+  if(state.teacherTab==='schedule'){
+    return `<div class="topbar"><div><h2>My Schedule</h2><div class="desc">Your weekly teaching schedule across all sections.</div></div></div>
+    ${renderWeekGrid(schedulesOfTeacher(u.id), {showClass:true})}`;
+  }
   if(!state.selectedClassId || !cls.find(c=>c.id===state.selectedClassId)) state.selectedClassId = cls[0].id;
   const activeCls = getClass(state.selectedClassId);
   const teacherSubjects = subjectAssignmentsOfClass(activeCls.id).filter(cs=>cs.teacherId===u.id);
@@ -732,7 +813,7 @@ function renderTeacherMain(){
   ${body}`;
 }
 function tabTitleTeacher(tab){
-  return {overview:'Overview', roster:'Class Roster', post:'Post Work', attendance:'Attendance', gradebook:'Gradebook', behavior:'Behavior'}[tab];
+  return {overview:'Overview', roster:'Class Roster', post:'Post Work', attendance:'Attendance', gradebook:'Gradebook', behavior:'Behavior', schedule:'My Schedule'}[tab];
 }
 function renderTeacherOverview(classes){
   const teacherId = state.currentUser.id;
@@ -925,10 +1006,14 @@ function renderStudentMain(){
   else if(tab==='behavior') body = renderStudentBehavior(cls);
   else if(tab==='subjects') body = renderStudentSubjects(cls);
   else if(tab==='work') body = renderStudentWork(cls);
+  else if(tab==='schedule') body = renderStudentSchedule(cls);
   return `<div class="topbar"><div><h2>${tabTitleStudent(tab)}</h2><div class="desc">${classLabel(cls)}</div></div></div>${body}`;
 }
 function tabTitleStudent(tab){
-  return {overview:'Overview', grades:'My Grades', behavior:'Behavior', subjects:'Subjects / Courses', work:'Class Work'}[tab];
+  return {overview:'Overview', grades:'My Grades', behavior:'Behavior', subjects:'Subjects / Courses', work:'Class Work', schedule:'My Schedule'}[tab];
+}
+function renderStudentSchedule(cls){
+  return renderWeekGrid(schedulesOfClass(cls.id), {showTeacher:true});
 }
 function renderStudentOverview(cls){
   const studentId = state.currentUser.id;
@@ -1094,6 +1179,7 @@ function renderModal(){
   if(t==='addTeacher') inner = modalAddTeacher();
   else if(t==='addStudent') inner = modalAddStudent();
   else if(t==='addClass') inner = modalAddClass();
+  else if(t==='addSchedule') inner = modalAddSchedule(state.modal.payload.classId);
   else if(t==='addSubject') inner = modalAddSubject();
   else if(t==='assignSubject') inner = modalAssignSubject(state.modal.payload.classId);
   else if(t==='postWork') inner = modalPostWork();
@@ -1309,6 +1395,20 @@ function modalAddClass(){
     <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Create section</button></div>
   </form>`;
 }
+function modalAddSchedule(classId){
+  const cls = getClass(classId);
+  const assignments = subjectAssignmentsOfClass(classId);
+  return `<h3>Add schedule slot</h3>
+  <form id="modal-form">
+    <div class="field"><label>Section</label><input type="text" value="${esc(cls ? classLabel(cls) : '')}" disabled></div>
+    <div class="field"><label>Subject</label><select id="f-schedule-cs" required><option value="">— Choose subject —</option>${assignments.map(cs=>{ const subject=getSubject(cs.subjectId); const teacher=getUser(cs.teacherId); return `<option value="${cs.id}">${esc(subject.name)}${teacher?' — '+esc(teacher.name):''}</option>`; }).join('')}</select></div>
+    <div class="field"><label>Day</label><select id="f-schedule-day" required>${SCHOOL_DAYS.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select></div>
+    <div class="field"><label>Start time</label><input type="time" id="f-schedule-start" required></div>
+    <div class="field"><label>End time</label><input type="time" id="f-schedule-end" required></div>
+    <div class="field"><label>Room (optional)</label><input type="text" id="f-schedule-room" placeholder="e.g. Room 204"></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Add slot</button></div>
+  </form>`;
+}
 function modalAddSubject(){
   return `<h3>New subject / course</h3>
   <form id="modal-form">
@@ -1514,6 +1614,17 @@ function attachModalHandlers(type){
       if(!grade){ alert('Choose a grade/year level.'); return; }
       db.classes.push({ id: uid('c'), level, grade, section, teacherId, studentType });
       await saveDB(); closeModal(); showToast('Section created.');
+    } else if(type==='addSchedule'){
+      const classSubjectId = document.getElementById('f-schedule-cs').value;
+      const day = document.getElementById('f-schedule-day').value;
+      const startTime = document.getElementById('f-schedule-start').value;
+      const endTime = document.getElementById('f-schedule-end').value;
+      const room = document.getElementById('f-schedule-room').value.trim();
+      if(!classSubjectId){ alert('Choose a subject first.'); return; }
+      if(!startTime || !endTime){ alert('Set a start and end time.'); return; }
+      if(endTime <= startTime){ alert('End time must be after the start time.'); return; }
+      db.schedules.push({ id: uid('sch'), classSubjectId, day, startTime, endTime, room });
+      await saveDB(); closeModal(); showToast('Schedule slot added.');
     } else if(type==='postWork'){
       const classSubjectId = document.getElementById('f-class-subject').value;
       const mtype = document.getElementById('f-type').value;
