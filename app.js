@@ -542,7 +542,7 @@ function renderAdminStudents(){
             <td><b>${esc(s.name)}</b></td>
             <td class="mono">${esc(s.username)}</td>
             <td class="mono">${esc(s.lrn||'—')}</td>
-            <td>${cls ? classLabel(cls) : '<span class="pill pill-danger">Not enrolled</span>'}</td>
+            <td>${cls ? classLabel(cls) : '<span class="pill pill-danger">Not enrolled</span>'}${s.studentType ? ` <span class="pill pill-slate">${esc(s.studentType)}</span>` : ''}</td>
             <td><button class="btn btn-ghost btn-sm" data-edit-user="${s.id}">Edit</button> <button class="btn btn-ghost btn-sm" data-remove-student="${s.id}">Remove</button></td>
           </tr>`;
         }).join('') || `<tr><td colspan="5" class="empty">No student accounts yet.</td></tr>`}
@@ -1116,8 +1116,12 @@ function renderModal(){
   if(t==='addStudent' || t==='editUser'){
     const levelSel = document.getElementById('f-level');
     const classSel = document.getElementById('f-class');
+    const typeField = document.getElementById('f-student-type-field');
     if(levelSel && classSel){
-      levelSel.onchange = ()=> populateClassOptionsForLevel(classSel, levelSel.value, '');
+      levelSel.onchange = ()=>{
+        populateClassOptionsForLevel(classSel, levelSel.value, '');
+        if(typeField) typeField.style.display = needsStudentType(levelSel.value) ? '' : 'none';
+      };
     }
   }
   if(t==='addClass'){
@@ -1134,6 +1138,51 @@ function renderModal(){
         syncSection();
       };
       gradeSel.onchange = syncSection;
+    }
+  }
+  if(t==='messages'){
+    const searchInput = document.getElementById('f-message-to-search');
+    const hiddenInput = document.getElementById('f-message-to');
+    const suggestionsBox = document.getElementById('f-message-to-suggestions');
+    const selectedBox = document.getElementById('f-message-to-selected');
+    const candidates = db.users.filter(u=>u.id!==state.currentUser.id);
+    const renderSuggestions = (query)=>{
+      const q = query.trim().toLowerCase();
+      const matches = (q ? candidates.filter(u=>u.name.toLowerCase().includes(q)) : candidates).slice(0,6);
+      if(!matches.length){
+        suggestionsBox.innerHTML = '<div class="recipient-suggestion-empty">No matching people.</div>';
+      }else{
+        suggestionsBox.innerHTML = matches.map(u=>`<button type="button" class="recipient-suggestion" data-recipient-id="${esc(u.id)}">${userAvatar(u)}<span class="recipient-suggestion-info"><b>${esc(u.name)}</b><span class="meta">${esc(u.role)}${u.email?' · '+esc(u.email):''}</span></span></button>`).join('');
+        suggestionsBox.querySelectorAll('[data-recipient-id]').forEach(btn=>{
+          btn.onmousedown = (e)=>{ e.preventDefault(); selectRecipient(btn.dataset.recipientId); };
+        });
+      }
+      suggestionsBox.style.display = '';
+    };
+    const selectRecipient = (userId)=>{
+      const picked = getUser(userId);
+      if(!picked) return;
+      hiddenInput.value = picked.id;
+      suggestionsBox.style.display = 'none';
+      suggestionsBox.innerHTML = '';
+      searchInput.style.display = 'none';
+      selectedBox.style.display = '';
+      selectedBox.innerHTML = `<div class="recipient-chip">${userAvatar(picked)}<span class="recipient-chip-info"><b>${esc(picked.name)}</b><span class="meta">${esc(picked.role)}${picked.email?' · '+esc(picked.email):''}</span></span><button type="button" class="recipient-change" id="f-message-to-change">Change</button></div>`;
+      const changeBtn = document.getElementById('f-message-to-change');
+      if(changeBtn) changeBtn.onclick = ()=>{
+        hiddenInput.value = '';
+        selectedBox.style.display = 'none';
+        selectedBox.innerHTML = '';
+        searchInput.style.display = '';
+        searchInput.value = '';
+        searchInput.focus();
+        renderSuggestions('');
+      };
+    };
+    if(searchInput){
+      searchInput.addEventListener('input', ()=> renderSuggestions(searchInput.value));
+      searchInput.addEventListener('focus', ()=> renderSuggestions(searchInput.value));
+      searchInput.addEventListener('blur', ()=> setTimeout(()=>{ if(suggestionsBox) suggestionsBox.style.display = 'none'; }, 150));
     }
   }
   bg.addEventListener('click', (e)=>{ if(e.target===bg) closeModal(); });
@@ -1163,6 +1212,7 @@ function modalEditUser(userId){
       const currentLevel = currentClass ? currentClass.level : '';
       return `<div class="field"><label>LRN</label><input type="text" id="f-lrn" value="${esc(user.lrn||'Generated automatically')}" readonly><div class="helper">The system assigns this number automatically.</div></div>
       <div class="field"><label>Education level</label><select id="f-level"><option value="">— Choose level —</option>${EDU_LEVELS.map(lvl=>`<option value="${esc(lvl)}" ${lvl===currentLevel?'selected':''}>${esc(lvl)}</option>`).join('')}</select></div>
+      <div class="field" id="f-student-type-field" style="${needsStudentType(currentLevel)?'':'display:none;'}"><label>Enrollment type</label><select id="f-student-type"><option value="Regular" ${(user.studentType||'Regular')==='Regular'?'selected':''}>Regular</option><option value="Irregular" ${user.studentType==='Irregular'?'selected':''}>Irregular</option></select></div>
       <div class="field"><label>Enroll in section</label><select id="f-class">${currentLevel ? '<option value="">— Not yet enrolled —</option>'+classesOfLevel(currentLevel).map(c=>`<option value="${c.id}" ${c.id===user.classId?'selected':''}>${esc(classLabel(c))}</option>`).join('') : '<option value="">— Choose a level first —</option>'}</select></div>`;
     })() : ''}
     <div class="field"><label>New password (optional)</label><input type="text" id="f-password" placeholder="Leave blank to keep current password"></div>
@@ -1186,11 +1236,18 @@ function modalSettings(){
 }
 function modalMessagesEnhanced(){
   const user = state.currentUser;
-  const users = db.users.filter(u=>u.id!==user.id);
   const messages = db.messages.filter(msg=>msg.fromId===user.id || msg.toId===user.id).sort((a,b)=>(b.sentAt||'').localeCompare(a.sentAt||''));
   return `<h3>Messages</h3>
   <form id="modal-form">
-    <div class="field"><label>Send to</label><select id="f-message-to" required><option value="">Choose recipient</option>${users.map(u=>`<option value="${u.id}">${esc(u.name)} (${esc(u.role)})</option>`).join('')}</select></div>
+    <div class="field">
+      <label>Send to</label>
+      <div class="recipient-picker">
+        <input type="hidden" id="f-message-to" value="">
+        <input type="text" id="f-message-to-search" placeholder="Type a name…" autocomplete="off">
+        <div id="f-message-to-suggestions" class="recipient-suggestions" style="display:none;"></div>
+        <div id="f-message-to-selected" class="recipient-selected" style="display:none;"></div>
+      </div>
+    </div>
     <div class="field"><label>Subject</label><input type="text" id="f-message-subject" required></div>
     <div class="field"><label>Message</label><textarea id="f-message-body" required></textarea></div>
     <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button><button type="submit" class="btn btn-gold">Send message</button></div>
@@ -1226,6 +1283,7 @@ function modalAddStudent(){
     <div class="field"><label>Education level</label>
       <select id="f-level"><option value="">— Choose level —</option>${EDU_LEVELS.map(lvl=>`<option value="${esc(lvl)}">${esc(lvl)}</option>`).join('')}</select>
     </div>
+    <div class="field" id="f-student-type-field" style="display:none;"><label>Enrollment type</label><select id="f-student-type"><option value="Regular">Regular</option><option value="Irregular">Irregular</option></select></div>
     <div class="field"><label>Enroll in section</label>
       <select id="f-class"><option value="">— Choose a level first —</option></select>
     </div>
@@ -1383,6 +1441,10 @@ function attachModalHandlers(type){
       if(user.role==='student'){
         user.lrn = user.lrn || generateUniqueLrn(user.id);
         user.classId = document.getElementById('f-class').value;
+        const cls = getClass(user.classId);
+        const level = document.getElementById('f-level') ? document.getElementById('f-level').value : (cls ? cls.level : '');
+        const typeSel = document.getElementById('f-student-type');
+        user.studentType = needsStudentType(level) && typeSel ? typeSel.value : '';
       }
       const password = document.getElementById('f-password').value;
       if(password) user.password = password;
@@ -1431,8 +1493,10 @@ function attachModalHandlers(type){
       const username = document.getElementById('f-username').value.trim();
       const password = document.getElementById('f-password').value;
       const classId = document.getElementById('f-class').value;
+      const level = document.getElementById('f-level').value;
+      const studentType = needsStudentType(level) ? document.getElementById('f-student-type').value : '';
       if(db.users.some(u=>u.username===username || (u.email||'').toLowerCase()===email)){ alert('That username or email is already taken.'); return; }
-      db.users.push({ id: uid('u'), role:'student', username, email, password, name, lrn, classId });
+      db.users.push({ id: uid('u'), role:'student', username, email, password, name, lrn, classId, studentType });
       await saveDB(); closeModal(); showToast('Student account created.');
     } else if(type==='addClass'){
       const level = document.getElementById('f-level').value;
