@@ -101,11 +101,11 @@
 
   /* ---------- Dashboard shell ---------- */
   .shell{display:grid; grid-template-columns:250px 1fr; min-height:100vh;}
-  @media (max-width:780px){ .shell{grid-template-columns:1fr;} .sidebar{display:none;} .sidebar.open{display:flex;} }
   .sidebar{
     background:var(--ink-navy); color:var(--parchment); display:flex; flex-direction:column;
-    padding:22px 16px; position:sticky; top:0; height:100vh;
+    padding:22px 16px; position:sticky; top:0; height:100vh; z-index:1;
   }
+  .sidebar-close{display:none; background:none; border:none; color:var(--parchment); font-size:1.4rem; line-height:1; padding:4px 8px; margin-left:auto; flex:0 0 auto;}
   .sidebar-brand{display:flex; align-items:center; gap:10px; padding:6px 8px 22px 8px; border-bottom:1px solid rgba(246,241,228,0.12); margin-bottom:18px;}
   .sidebar-brand .school-logo{width:42px; height:42px;}
   .sidebar-brand .name{font-family:'Fraunces',serif; font-size:0.92rem; line-height:1.25; color:var(--parchment);}
@@ -242,6 +242,16 @@
     .menu-toggle{display:inline-flex;}
     .account-tools{margin-bottom:12px;}
     .profile-name{display:none;}
+    .shell{grid-template-columns:1fr;}
+    .sidebar-backdrop{position:fixed; inset:0; background:rgba(10,23,40,0.55); z-index:190; opacity:0; pointer-events:none; transition:opacity .2s ease;}
+    .sidebar-backdrop.open{opacity:1; pointer-events:auto;}
+    .sidebar{
+      position:fixed; top:0; left:0; width:82vw; max-width:300px; height:100vh;
+      transform:translateX(-100%); transition:transform .25s ease; z-index:200;
+      box-shadow:0 0 40px rgba(0,0,0,0.35);
+    }
+    .sidebar.open{transform:translateX(0);}
+    .sidebar-close{display:inline-flex;}
   }
 
   /* ---------- Messages: conversation list / thread / compose ---------- */
