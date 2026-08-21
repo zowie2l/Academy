@@ -361,6 +361,7 @@ function renderShell(mainHTML, role){
   return `
   <div class="shell">
     <button class="menu-toggle" id="menu-toggle">☰ Menu</button>
+    <div class="sidebar-backdrop ${state.sidebarOpen?'open':''}" id="sidebar-backdrop"></div>
     <div class="sidebar ${state.sidebarOpen?'open':''}" id="sidebar">
       <div class="sidebar-brand">
         ${schoolLogo(42)}
@@ -368,6 +369,7 @@ function renderShell(mainHTML, role){
           <div class="name">DFLC Memorial<br>Colleges</div>
           <div class="tag">${role} portal</div>
         </div>
+        <button class="sidebar-close" id="sidebar-close" aria-label="Close menu">&times;</button>
       </div>
       <nav>
         ${navItems[role].map(([key,label])=>`<button class="nav-item ${activeTab===key?'active':''}" data-nav="${key}">${label}</button>`).join('')}
@@ -431,6 +433,10 @@ async function markNotificationsRead(){
 function attachShellHandlers(){
   const mt = document.getElementById('menu-toggle');
   if(mt) mt.onclick = ()=>{ state.sidebarOpen = !state.sidebarOpen; render(); };
+  const sc = document.getElementById('sidebar-close');
+  if(sc) sc.onclick = ()=>{ state.sidebarOpen = false; render(); };
+  const bd = document.getElementById('sidebar-backdrop');
+  if(bd) bd.onclick = ()=>{ state.sidebarOpen = false; render(); };
   const lo = document.getElementById('logout-btn');
   if(lo) lo.onclick = logout;
   document.querySelectorAll('[data-nav]').forEach(btn=>{
