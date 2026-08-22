@@ -195,9 +195,22 @@ function playTone(freq, duration, delay, type){
   }, delay || 0);
 }
 // Bell = a bright two-note chime (higher pitch)
-function playNotificationSound(){ playTone(880, 0.14, 0); playTone(1318.5, 0.16, 130); }
+function playNotificationSound(){ unlockAudio(); playTone(880, 0.14, 0); playTone(1318.5, 0.16, 130); }
 // Message = a softer double "ping" (lower pitch, same note twice)
-function playMessageSound(){ playTone(587.33, 0.12, 0); playTone(587.33, 0.12, 160); }
+function playMessageSound(){ unlockAudio(); playTone(587.33, 0.12, 0); playTone(587.33, 0.12, 160); }
+// A toast that doesn't go through the normal render() cycle — a background poll
+// firing this mid-typing shouldn't blow away whatever else is on screen. Also
+// covers browsers that block the chime (autoplay policy) until a real click
+// happens, so an update is never silent *and* invisible at the same time.
+function showLiveToast(msg){
+  const existing = document.querySelector('.toast.toast-live');
+  if(existing) existing.remove();
+  const t = document.createElement('div');
+  t.className = 'toast toast-live';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>{ if(t.parentNode) t.remove(); }, 3400);
+}
 
 let alertPollTimer = null;
 let knownNotificationIds = new Set();
@@ -241,12 +254,45 @@ async function pollForUpdates(){
     const msgs = unreadMessagesForUser(freshUser);
     const newNotifs = notifs.filter(item=>!knownNotificationIds.has(item.id));
     const newMsgs = msgs.filter(item=>!knownMessageIds.has(item.id));
-    if(newNotifs.length) playNotificationSound();
-    if(newMsgs.length) playMessageSound();
+    if(newNotifs.length){
+      playNotificationSound();
+      showLiveToast(newNotifs.length===1 ? newNotifs[0].title : `${newNotifs.length} new notifications`);
+    }
+    if(newMsgs.length){
+      playMessageSound();
+      const sender = getUser(newMsgs[0].fromId);
+      showLiveToast(newMsgs.length===1 ? `New message from ${sender ? sender.name : 'someone'}` : `${newMsgs.length} new messages`);
+    }
     knownNotificationIds = new Set(notifs.map(item=>item.id));
     knownMessageIds = new Set(msgs.map(item=>item.id));
     updateAlertBadgesInPlace();
+    refreshOpenThreadInPlace();
   }catch(e){ console.error('pollForUpdates failed', e); }
+}
+// If a chat thread is open when a poll pulls in fresh data, append any new
+// messages that arrived so the conversation updates live — without touching
+// whatever the user currently has typed in the reply box.
+async function refreshOpenThreadInPlace(){
+  if(!state.modal || state.modal.type!=='messages') return;
+  const payload = state.modal.payload || {};
+  if(payload.mode!=='thread' || !payload.otherId) return;
+  const threadEl = document.getElementById('message-thread');
+  if(!threadEl) return;
+  const user = state.currentUser;
+  const wasNearBottom = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight < 80;
+  const thread = conversationMessages(user.id, payload.otherId);
+  threadEl.innerHTML = thread.length ? thread.map(msg=>{
+    const mine = msg.fromId===user.id;
+    return `<div class="bubble-row ${mine?'bubble-row-mine':''}">
+      <div class="bubble ${mine?'bubble-mine':'bubble-theirs'}">
+        ${msg.body ? `<div class="bubble-text">${esc(msg.body).replace(/\n/g,'<br>')}</div>` : ''}
+        ${messageAttachmentHtml(msg)}
+        <div class="bubble-time">${fmtMessageTime(msg.sentAt)}</div>
+      </div>
+    </div>`;
+  }).join('') : '<div class="empty"><div class="glyph">&#128172;</div>Say hello — no messages yet.</div>';
+  if(wasNearBottom) threadEl.scrollTop = threadEl.scrollHeight;
+  await markConversationRead(payload.otherId);
 }
 function startAlertPolling(){
   if(alertPollTimer) clearInterval(alertPollTimer);
@@ -552,19 +598,33 @@ function userAvatar(user, className){
 function notificationsForUser(user, role){
   if(!user) return [];
   if(role==='admin'){
+    const unassigned = db.classes.filter(c=>!c.teacherId);
+    const unenrolled = db.users.filter(u=>u.role==='student' && !u.classId);
     const items = [];
-    const unassigned = db.classes.filter(c=>!c.teacherId).length;
-    const unenrolled = db.users.filter(u=>u.role==='student' && !u.classId).length;
-    if(unassigned) items.push({id:`admin-unassigned-${unassigned}`, title:'Sections need teachers', body:`${unassigned} section${unassigned===1?'':'s'} still need a teacher assignment.`});
-    if(unenrolled) items.push({id:`admin-unenrolled-${unenrolled}`, title:'Students not enrolled', body:`${unenrolled} student${unenrolled===1?'':'s'} still need a section.`});
-    return items;
+    items.push(...unassigned.map(cls=>({
+      id:`admin-unassigned-${cls.id}`, title:'Section needs a teacher', body:classLabel(cls), date:cls.createdAt||null,
+    })));
+    items.push(...unenrolled.map(student=>({
+      id:`admin-unenrolled-${student.id}`, title:'Student needs a section', body:student.name, date:student.createdAt||null,
+    })));
+    return items.sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   }
   if(role==='student'){
     const cls = getClass(user.classId);
-    return cls ? db.materials.filter(m=>m.classId===cls.id && m.dueDate).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,5).map(m=>({id:`student-due-${m.id}`, title:`Due ${fmtDate(m.dueDate)}`, body:m.title})) : [];
+    if(!cls) return [];
+    return db.materials.filter(m=>m.classId===cls.id && m.dueDate)
+      .sort((a,b)=>a.dueDate.localeCompare(b.dueDate))
+      .slice(0,8)
+      .map(m=>({ id:`student-due-${m.id}`, title:`Due ${fmtDate(m.dueDate)}`, body:m.title, date:m.postedAt||null }));
   }
+  // teacher: one dated item per subject assignment, not a single "assigned to N subjects" blob —
+  // that way each new assignment is its own notification instead of being swallowed by a stale count.
   const assignments = subjectAssignmentsOfTeacher(user.id);
-  return assignments.length ? [{id:`teacher-assignments-${assignments.length}`, title:'Teaching assignments', body:`You are assigned to ${assignments.length} subject${assignments.length===1?'':'s'}.`}] : [];
+  return assignments.map(cs=>{
+    const subject = db.subjects.find(s=>s.id===cs.subjectId);
+    const cls = getClass(cs.classId);
+    return { id:`teacher-assignment-${cs.id}`, title:'Teaching assignment', body:`${subject?subject.name:'A subject'} — ${cls?classLabel(cls):'a section'}`, date:cs.createdAt||null };
+  }).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
 }
 function unreadNotificationsForUser(user, role){
   const seen = new Set(user && Array.isArray(user.seenNotificationIds) ? user.seenNotificationIds : []);
@@ -588,6 +648,45 @@ async function markMessagesRead(){
   const ids = db.messages.filter(msg=>msg.toId===user.id).map(msg=>msg.id);
   user.readMessageIds = Array.from(new Set([...(user.readMessageIds||[]), ...ids]));
   await saveDB();
+}
+// Mark only the messages in one conversation (i.e. from this one other person)
+// as read, so opening one thread doesn't clear the unread badge on the rest.
+async function markConversationRead(otherId){
+  const user = state.currentUser;
+  if(!user) return;
+  const ids = db.messages.filter(msg=>msg.toId===user.id && msg.fromId===otherId).map(msg=>msg.id);
+  if(!ids.length) return;
+  user.readMessageIds = Array.from(new Set([...(user.readMessageIds||[]), ...ids]));
+  await saveDB();
+}
+// Every message the user has sent or received, in one conversation thread with
+// a given other person, oldest first — this is what makes it read like chat.
+function conversationMessages(userId, otherId){
+  return db.messages
+    .filter(msg=>(msg.fromId===userId && msg.toId===otherId) || (msg.fromId===otherId && msg.toId===userId))
+    .sort((a,b)=>(a.sentAt||'').localeCompare(b.sentAt||''));
+}
+// One row per person the user has ever exchanged messages with, newest activity
+// first, each carrying its own unread count — this is the conversation list.
+function conversationsForUser(user){
+  if(!user) return [];
+  const read = new Set(Array.isArray(user.readMessageIds) ? user.readMessageIds : []);
+  const byOther = new Map();
+  db.messages.forEach(msg=>{
+    if(msg.fromId!==user.id && msg.toId!==user.id) return;
+    const otherId = msg.fromId===user.id ? msg.toId : msg.fromId;
+    if(!byOther.has(otherId)) byOther.set(otherId, []);
+    byOther.get(otherId).push(msg);
+  });
+  const rows = [];
+  byOther.forEach((msgs, otherId)=>{
+    msgs.sort((a,b)=>(a.sentAt||'').localeCompare(b.sentAt||''));
+    const last = msgs[msgs.length-1];
+    const unread = msgs.filter(msg=>msg.toId===user.id && !read.has(msg.id)).length;
+    rows.push({ otherId, other: getUser(otherId), last, unread });
+  });
+  rows.sort((a,b)=>(b.last.sentAt||'').localeCompare(a.last.sentAt||''));
+  return rows;
 }
 // The whole app persists as one JSON blob, so sending a message while our local
 // copy is stale would overwrite (and silently drop) anything another user saved
@@ -673,7 +772,7 @@ function renderAdminOverview(){
   <div class="card" style="margin-bottom:20px;">
     <div class="section-title">Class sections at a glance</div>
     <table>
-      <thead><tr><th>Grade &amp; Section</th><th>Teacher assigned</th><th>Enrolled</th><th>Work posted</th></tr></thead>
+      <thead><tr><th>Grade &amp; Section</th><th>Adviser</th><th>Enrolled</th><th>Work posted</th></tr></thead>
       <tbody>
         ${db.classes.map(c=>{
           const t = getUser(c.teacherId);
@@ -687,7 +786,7 @@ function renderAdminOverview(){
       </tbody>
     </table>
   </div>
-  ${unassigned>0 ? `<div class="card" style="border-left:4px solid var(--danger);"><b style="color:var(--danger);">${unassigned} section(s)</b> have no teacher assigned yet — assign one under <i>Classes &amp; Sections</i>.</div>` : ''}
+  ${unassigned>0 ? `<div class="card" style="border-left:4px solid var(--danger);"><b style="color:var(--danger);">${unassigned} section(s)</b> have no adviser assigned yet — assign one under <i>Classes &amp; Sections</i>.</div>` : ''}
   `;
 }
 function renderAdminTeachers(){
@@ -743,7 +842,7 @@ function renderAdminClasses(){
       ${['All', ...EDU_LEVELS].map(lvl=>`<button class="tab-btn ${lvl===activeLevel?'active':''}" data-select-level="${esc(lvl)}">${esc(lvl)}${lvl!=='All' ? ` (${classesOfLevel(lvl).length})` : ''}</button>`).join('')}
     </div>
     <table>
-      <thead><tr><th>Level</th><th>Grade &amp; Section</th><th>Class teacher</th><th>Subjects and teachers</th><th>Students</th><th></th></tr></thead>
+      <thead><tr><th>Level</th><th>Grade &amp; Section</th><th>Adviser</th><th>Subjects and teachers</th><th>Students</th><th></th></tr></thead>
       <tbody>
         ${shownClasses.map(c=>{
           const t = getUser(c.teacherId);
@@ -990,15 +1089,70 @@ function renderTeacherPost(cls){
   `).join('') : `<div class="card empty"><div class="glyph">🗂️</div>Nothing posted to this section yet.</div>`}
   `;
 }
+/* ---------------------- real-time schedule helpers (attendance gating) ---------------------- */
+function currentDayName(){
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  return days[new Date().getDay()]; // may be 'Sunday', which isn't a SCHOOL_DAYS entry
+}
+function nowTimeStr(){
+  const d = new Date();
+  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+function fmtTimeLabel(hm){
+  if(!hm) return '';
+  const [h,m] = hm.split(':').map(Number);
+  const d = new Date(); d.setHours(h,m,0,0);
+  return d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+}
+// Where a class-subject's attendance stands right now against its weekly schedule:
+// 'no-schedule'       — this subject has no schedule slots configured at all
+// 'no-schedule-today'  — it meets some days, just not today
+// 'not-now'            — it meets today, but we're outside the start–end window
+// 'active'             — a scheduled slot for today is happening right now
+function scheduleStatusForClassSubject(csId){
+  const entries = db.schedules.filter(s=>s.classSubjectId===csId);
+  if(!entries.length) return {state:'no-schedule'};
+  const todayName = currentDayName();
+  const nowHM = nowTimeStr();
+  const dayIndex = (d)=> SCHOOL_DAYS.indexOf(d);
+  const todayIdx = dayIndex(todayName);
+  const todaysSlots = entries.filter(s=>s.day===todayName).sort((a,b)=>a.startTime.localeCompare(b.startTime));
+  const currentSlot = todaysSlots.find(s=>s.startTime<=nowHM && nowHM<=s.endTime);
+  if(currentSlot) return {state:'active', slot:currentSlot};
+  const ordered = entries.slice().sort((a,b)=>{
+    const ai = dayIndex(a.day), bi = dayIndex(b.day);
+    if(ai!==bi) return ai-bi;
+    return a.startTime.localeCompare(b.startTime);
+  });
+  let next = null;
+  if(todayIdx>=0){
+    next = ordered.find(s=>dayIndex(s.day)===todayIdx && s.startTime>nowHM);
+    if(!next) next = ordered.find(s=>dayIndex(s.day)>todayIdx);
+  }
+  if(!next) next = ordered[0]; // nothing left this week — wrap to next week's first slot
+  return { state: todaysSlots.length ? 'not-now' : 'no-schedule-today', next };
+}
+
 function renderTeacherAttendance(cls){
   const students = studentsOfClass(cls.id);
   const today = new Date().toISOString().slice(0,10);
-  const existing = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===state.selectedClassSubjectId && a.date===today);
-  const records = existing ? existing.records : {};
-  return `
-  <div class="card">
-    <div class="section-title">Record attendance — <span class="mono" style="font-weight:600;">${fmtDate(today)}</span></div>
-    ${students.length===0 ? `<div class="empty">No students enrolled in this section yet.</div>` : `
+  const assignment = getClassSubject(state.selectedClassSubjectId);
+  const subject = assignment ? getSubject(assignment.subjectId) : null;
+  const status = assignment ? scheduleStatusForClassSubject(assignment.id) : {state:'no-schedule'};
+  const nextLabel = (next)=> next ? `${esc(next.day)} · ${fmtTimeLabel(next.startTime)}–${fmtTimeLabel(next.endTime)}${next.room?` · ${esc(next.room)}`:''}` : '';
+
+  let takeAttendanceBlock;
+  if(status.state==='no-schedule'){
+    takeAttendanceBlock = `<div class="empty schedule-status"><div class="glyph">🗓️</div>No schedule has been set up for ${subject?esc(subject.name):'this subject'} yet.<div class="helper">Add a schedule slot from the Schedule tab so attendance knows when this class meets.</div></div>`;
+  } else if(status.state==='no-schedule-today'){
+    takeAttendanceBlock = `<div class="empty schedule-status"><div class="glyph">🗓️</div>No attendance schedule for today.<div class="helper">Next scheduled class: ${nextLabel(status.next)}</div></div>`;
+  } else if(status.state==='not-now'){
+    takeAttendanceBlock = `<div class="empty schedule-status"><div class="glyph">⏱️</div>No class at the moment.<div class="helper">Next class: ${nextLabel(status.next)}</div></div>`;
+  } else {
+    const existing = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===state.selectedClassSubjectId && a.date===today);
+    const records = existing ? existing.records : {};
+    takeAttendanceBlock = students.length===0 ? `<div class="empty">No students enrolled in this section yet.</div>` : `
+    <div class="helper" style="margin-bottom:10px;">Class is in session now — ${fmtTimeLabel(status.slot.startTime)}–${fmtTimeLabel(status.slot.endTime)}${status.slot.room?` · ${esc(status.slot.room)}`:''}.</div>
     <div class="att-grid" style="margin-bottom:6px;">
       <div class="att-head">Student</div><div class="att-head" style="text-align:center;">Present</div><div class="att-head" style="text-align:center;">Late</div><div class="att-head" style="text-align:center;">Absent</div>
     </div>
@@ -1012,7 +1166,13 @@ function renderTeacherAttendance(cls){
       </div>`;
     }).join('')}
     <div style="margin-top:16px;"><button class="btn btn-gold" id="save-attendance-btn">Save today's attendance</button></div>
-    `}
+    `;
+  }
+
+  return `
+  <div class="card">
+    <div class="section-title">Record attendance — <span class="mono" style="font-weight:600;">${fmtDate(today)}</span></div>
+    ${takeAttendanceBlock}
   </div>
   <div class="card" style="margin-top:18px;">
     <div class="section-title">Recent attendance history</div>
@@ -1066,7 +1226,14 @@ function renderTeacherBehavior(cls){
   }).join('') : `<div class="card empty"><div class="glyph">📝</div>No behavior notes recorded for this section yet.</div>`}`;
 }
 function attachTeacherHandlers(){
-  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.teacherTab = 'roster'; render(); });
+  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{
+    state.selectedClassId = b.dataset.selectClass;
+    state.selectedClassSubjectId = null;
+    // From the Overview tab, jump into that class's roster (there's nothing class-specific to
+    // stay on). From any other tab (attendance, gradebook, behavior, post work...), stay put.
+    if(state.teacherTab==='overview') state.teacherTab = 'roster';
+    render();
+  });
   document.querySelectorAll('[data-select-subject]').forEach(b=>b.onclick=()=>{ state.selectedClassSubjectId = b.dataset.selectSubject; render(); });
   const pw = document.getElementById('post-work-btn'); if(pw) pw.onclick=()=>openModal('postWork');
   document.querySelectorAll('[data-view-submissions]').forEach(b=>b.onclick=()=>openModal('viewSubmissions', {materialId: b.dataset.viewSubmissions}));
@@ -1286,7 +1453,8 @@ function attachStudentHandlers(){
 /* ======================= MODALS ======================= */
 async function openModal(type, payload){
   if(type==='notifications') await markNotificationsRead();
-  if(type==='messages') await markMessagesRead();
+  // Messages are marked read per-conversation (see markConversationRead), once
+  // a thread is actually opened, not just for opening the conversation list.
   state.modal = {type, payload};
   render();
 }
@@ -1361,52 +1529,78 @@ function renderModal(){
     }
   }
   if(t==='messages'){
+    const mode = (state.modal.payload && state.modal.payload.mode) || 'list';
     const newBtn = document.getElementById('msg-new-btn');
     if(newBtn) newBtn.onclick = ()=>{ state.modal.payload = { mode:'compose' }; renderModal(); };
     const backBtn = document.getElementById('msg-back-btn');
     if(backBtn) backBtn.onclick = ()=>{ state.modal.payload = { mode:'list' }; renderModal(); };
-    const searchInput = document.getElementById('f-message-to-search');
-    const hiddenInput = document.getElementById('f-message-to');
-    const suggestionsBox = document.getElementById('f-message-to-suggestions');
-    const selectedBox = document.getElementById('f-message-to-selected');
-    const candidates = db.users.filter(u=>u.id!==state.currentUser.id);
-    const renderSuggestions = (query)=>{
-      const q = query.trim().toLowerCase();
-      const matches = (q ? candidates.filter(u=>u.name.toLowerCase().includes(q)) : candidates).slice(0,6);
-      if(!matches.length){
-        suggestionsBox.innerHTML = '<div class="recipient-suggestion-empty">No matching people.</div>';
-      }else{
-        suggestionsBox.innerHTML = matches.map(u=>`<button type="button" class="recipient-suggestion" data-recipient-id="${esc(u.id)}">${userAvatar(u)}<span class="recipient-suggestion-info"><b>${esc(u.name)}</b><span class="meta">${esc(u.role)}${u.email?' · '+esc(u.email):''}</span></span></button>`).join('');
-        suggestionsBox.querySelectorAll('[data-recipient-id]').forEach(btn=>{
-          btn.onmousedown = (e)=>{ e.preventDefault(); selectRecipient(btn.dataset.recipientId); };
+    // Opening an existing conversation: click a row in the list, land in the thread.
+    document.querySelectorAll('[data-open-thread]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const otherId = btn.dataset.openThread;
+        await markConversationRead(otherId);
+        state.modal.payload = { mode:'thread', otherId };
+        renderModal();
+      };
+    });
+    if(mode==='compose'){
+      const searchInput = document.getElementById('f-message-to-search');
+      const suggestionsBox = document.getElementById('f-message-to-suggestions');
+      const candidates = db.users.filter(u=>u.id!==state.currentUser.id);
+      const renderSuggestions = (query)=>{
+        const q = query.trim().toLowerCase();
+        const matches = (q ? candidates.filter(u=>u.name.toLowerCase().includes(q)) : candidates).slice(0,6);
+        if(!matches.length){
+          suggestionsBox.innerHTML = '<div class="recipient-suggestion-empty">No matching people.</div>';
+        }else{
+          suggestionsBox.innerHTML = matches.map(u=>`<button type="button" class="recipient-suggestion" data-recipient-id="${esc(u.id)}">${userAvatar(u)}<span class="recipient-suggestion-info"><b>${esc(u.name)}</b><span class="meta">${esc(u.role)}${u.email?' · '+esc(u.email):''}</span></span></button>`).join('');
+          suggestionsBox.querySelectorAll('[data-recipient-id]').forEach(btn=>{
+            btn.onmousedown = async (e)=>{
+              e.preventDefault();
+              const otherId = btn.dataset.recipientId;
+              await markConversationRead(otherId);
+              // Picking a recipient drops straight into that conversation's thread —
+              // this is how you both start a new one and reach an existing one.
+              state.modal.payload = { mode:'thread', otherId };
+              renderModal();
+            };
+          });
+        }
+        suggestionsBox.style.display = '';
+      };
+      if(searchInput){
+        searchInput.addEventListener('input', ()=> renderSuggestions(searchInput.value));
+        searchInput.addEventListener('focus', ()=> renderSuggestions(searchInput.value));
+        searchInput.addEventListener('blur', ()=> setTimeout(()=>{ if(suggestionsBox) suggestionsBox.style.display = 'none'; }, 150));
+        searchInput.focus();
+      }
+    }
+    if(mode==='thread'){
+      const threadEl = document.getElementById('message-thread');
+      if(threadEl) threadEl.scrollTop = threadEl.scrollHeight;
+      const textarea = document.getElementById('f-message-body');
+      if(textarea){
+        textarea.focus();
+        textarea.addEventListener('input', ()=>{
+          textarea.style.height = 'auto';
+          textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+        });
+        textarea.addEventListener('keydown', (e)=>{
+          if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); document.getElementById('modal-form').requestSubmit(); }
         });
       }
-      suggestionsBox.style.display = '';
-    };
-    const selectRecipient = (userId)=>{
-      const picked = getUser(userId);
-      if(!picked) return;
-      hiddenInput.value = picked.id;
-      suggestionsBox.style.display = 'none';
-      suggestionsBox.innerHTML = '';
-      searchInput.style.display = 'none';
-      selectedBox.style.display = '';
-      selectedBox.innerHTML = `<div class="recipient-chip">${userAvatar(picked)}<span class="recipient-chip-info"><b>${esc(picked.name)}</b><span class="meta">${esc(picked.role)}${picked.email?' · '+esc(picked.email):''}</span></span><button type="button" class="recipient-change" id="f-message-to-change">Change</button></div>`;
-      const changeBtn = document.getElementById('f-message-to-change');
-      if(changeBtn) changeBtn.onclick = ()=>{
-        hiddenInput.value = '';
-        selectedBox.style.display = 'none';
-        selectedBox.innerHTML = '';
-        searchInput.style.display = '';
-        searchInput.value = '';
-        searchInput.focus();
-        renderSuggestions('');
-      };
-    };
-    if(searchInput){
-      searchInput.addEventListener('input', ()=> renderSuggestions(searchInput.value));
-      searchInput.addEventListener('focus', ()=> renderSuggestions(searchInput.value));
-      searchInput.addEventListener('blur', ()=> setTimeout(()=>{ if(suggestionsBox) suggestionsBox.style.display = 'none'; }, 150));
+      const fileInput = document.getElementById('f-message-file');
+      const filePreview = document.getElementById('f-message-file-preview');
+      if(fileInput && filePreview){
+        fileInput.onchange = ()=>{
+          const file = fileInput.files && fileInput.files[0];
+          if(!file){ filePreview.style.display = 'none'; filePreview.innerHTML = ''; return; }
+          filePreview.style.display = '';
+          filePreview.innerHTML = `<span class="file-preview-chip">📎 ${esc(file.name)} <span>(${fmtFileSize(file.size)})</span> <button type="button" id="f-message-file-clear" title="Remove">&times;</button></span>`;
+          const clearBtn = document.getElementById('f-message-file-clear');
+          if(clearBtn) clearBtn.onclick = ()=>{ fileInput.value = ''; filePreview.style.display = 'none'; filePreview.innerHTML = ''; };
+        };
+      }
     }
   }
   bg.addEventListener('click', (e)=>{ if(e.target===bg) closeModal(); });
@@ -1445,10 +1639,8 @@ function modalEditUser(userId){
 }
 function modalNotifications(){
   const items = notificationsForUser(state.currentUser, state.view);
-  return `<h3>Notifications</h3>${items.length ? items.map(item=>`<div class="notification-item"><b>${esc(item.title)}</b><div>${esc(item.body)}</div></div>`).join('') : '<div class="empty">You have no new notifications.</div>'}<div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
-}
-function modalMessages(){
-  return `<h3>Messages</h3><div class="empty"><div class="glyph">&#128172;</div>No messages yet.</div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
+  const seen = new Set(Array.isArray(state.currentUser.seenNotificationIds) ? state.currentUser.seenNotificationIds : []);
+  return `<h3>Notifications</h3>${items.length ? items.map(item=>`<div class="notification-item${seen.has(item.id)?'':' notification-item-unread'}"><div class="row1"><b>${esc(item.title)}</b>${item.date ? `<span>${fmtMessageTime(item.date)}</span>` : ''}</div><div>${esc(item.body)}</div></div>`).join('') : '<div class="empty">You have no notifications.</div>'}<div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
 }
 function modalProfile(){
   const user = state.currentUser;
@@ -1458,35 +1650,79 @@ function modalSettings(){
   const user = state.currentUser;
   return `<h3>Account settings</h3><form id="modal-form"><div class="field"><label>Display name</label><input type="text" id="f-settings-name" value="${esc(user.name)}" required></div><div class="field"><label>School email</label><input type="email" id="f-settings-email" value="${esc(user.email||'')}" required></div><div class="field"><label>New password (optional)</label><input type="text" id="f-settings-password" placeholder="Leave blank to keep current password"></div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Save settings</button></div></form>`;
 }
+function fmtMessageTime(iso){
+  if(!iso) return '';
+  const dt = new Date(iso);
+  if(isNaN(dt)) return '';
+  const now = new Date();
+  const sameDay = dt.toDateString()===now.toDateString();
+  const time = dt.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+  return sameDay ? time : dt.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' · ' + time;
+}
+function messageAttachmentHtml(msg){
+  if(!msg.fileDataUrl) return '';
+  const isImage = (msg.fileMimeType||'').startsWith('image/');
+  if(isImage) return `<a href="${esc(msg.fileDataUrl)}" download="${esc(msg.fileName||'')}" class="bubble-image-link"><img src="${esc(msg.fileDataUrl)}" alt="${esc(msg.fileName||'attachment')}" class="bubble-image"></a>`;
+  return `<a class="attachment-chip" href="${esc(msg.fileDataUrl)}" download="${esc(msg.fileName||'')}" title="Download ${esc(msg.fileName||'')}">📎 ${esc(msg.fileName||'File')}${msg.fileSize!==undefined?` <span>(${fmtFileSize(msg.fileSize)})</span>`:''}</a>`;
+}
 function modalMessagesEnhanced(){
   const user = state.currentUser;
   const payload = state.modal.payload || {};
   const mode = payload.mode || 'list';
-  const messages = db.messages.filter(msg=>msg.fromId===user.id || msg.toId===user.id).sort((a,b)=>(b.sentAt||'').localeCompare(a.sentAt||''));
   if(mode==='compose'){
     return `<div class="modal-header-row"><h3>New message</h3><button type="button" class="btn btn-ghost btn-sm" id="msg-back-btn">&larr; Back</button></div>
-    <form id="modal-form">
-      <div class="field">
-        <label>Send to</label>
-        <div class="recipient-picker">
-          <input type="hidden" id="f-message-to" value="">
-          <input type="text" id="f-message-to-search" placeholder="Type a name…" autocomplete="off">
-          <div id="f-message-to-suggestions" class="recipient-suggestions" style="display:none;"></div>
-          <div id="f-message-to-selected" class="recipient-selected" style="display:none;"></div>
-        </div>
+    <div class="field">
+      <label>Send to</label>
+      <div class="recipient-picker">
+        <input type="text" id="f-message-to-search" placeholder="Type a name…" autocomplete="off">
+        <div id="f-message-to-suggestions" class="recipient-suggestions" style="display:none;"></div>
       </div>
-      <div class="field"><label>Subject</label><input type="text" id="f-message-subject" required></div>
-      <div class="field"><label>Message</label><textarea id="f-message-body" required></textarea></div>
-      <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Send message</button></div>
-    </form>`;
+    </div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button></div>`;
   }
+  if(mode==='thread'){
+    const other = getUser(payload.otherId);
+    const thread = other ? conversationMessages(user.id, other.id) : [];
+    return `<div class="modal-header-row"><h3>${other ? esc(other.name) : 'Conversation'}</h3><button type="button" class="btn btn-ghost btn-sm" id="msg-back-btn">&larr; Back</button></div>
+    ${!other ? '<div class="empty">This person is no longer available.</div>' : `
+    <div class="message-thread" id="message-thread">
+      ${thread.length ? thread.map(msg=>{
+        const mine = msg.fromId===user.id;
+        return `<div class="bubble-row ${mine?'bubble-row-mine':''}">
+          <div class="bubble ${mine?'bubble-mine':'bubble-theirs'}">
+            ${msg.body ? `<div class="bubble-text">${esc(msg.body).replace(/\n/g,'<br>')}</div>` : ''}
+            ${messageAttachmentHtml(msg)}
+            <div class="bubble-time">${fmtMessageTime(msg.sentAt)}</div>
+          </div>
+        </div>`;
+      }).join('') : '<div class="empty"><div class="glyph">&#128172;</div>Say hello — no messages yet.</div>'}
+    </div>
+    <form id="modal-form" class="thread-composer">
+      <input type="hidden" id="f-message-to" value="${esc(other.id)}">
+      <div id="f-message-file-preview" class="file-preview" style="display:none;"></div>
+      <div class="thread-input-row">
+        <label class="thread-attach-btn" title="Attach a file">📎<input type="file" id="f-message-file" style="display:none;"></label>
+        <textarea id="f-message-body" placeholder="Type a message…" rows="1"></textarea>
+        <button type="submit" class="btn btn-gold thread-send-btn">Send</button>
+      </div>
+    </form>`}`;
+  }
+  const rows = conversationsForUser(user);
   return `<div class="modal-header-row"><h3>Messages</h3><button type="button" class="btn btn-gold btn-sm" id="msg-new-btn">+ New message</button></div>
   <div class="message-list">
-    ${messages.length ? messages.map(msg=>{
-      const other = getUser(msg.fromId===user.id ? msg.toId : msg.fromId);
-      const direction = msg.fromId===user.id ? 'To' : 'From';
-      return `<div class="message-item"><div class="row1"><b>${esc(msg.subject)}</b><span>${fmtDate((msg.sentAt||'').slice(0,10))}</span></div><div class="meta">${direction} ${esc(other ? other.name : 'Unknown user')}</div><div>${esc(msg.body)}</div></div>`;
-    }).join('') : '<div class="empty"><div class="glyph">&#128172;</div>No messages yet.</div>'}
+    ${rows.length ? rows.map(row=>{
+      if(!row.other) return '';
+      const preview = row.last.body ? row.last.body : (row.last.fileName ? '📎 ' + row.last.fileName : '');
+      const you = row.last.fromId===user.id ? 'You: ' : '';
+      return `<button type="button" class="message-item conversation-item" data-open-thread="${esc(row.otherId)}">
+        ${userAvatar(row.other)}
+        <div class="conversation-info">
+          <div class="row1"><b>${esc(row.other.name)}</b><span>${fmtMessageTime(row.last.sentAt)}</span></div>
+          <div class="conversation-preview">${esc((you + preview).slice(0,90))}</div>
+        </div>
+        ${row.unread ? `<span class="notification-count">${row.unread}</span>` : ''}
+      </button>`;
+    }).join('') : '<div class="empty"><div class="glyph">&#128172;</div>No conversations yet.</div>'}
   </div>
   <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
 }
@@ -1527,7 +1763,7 @@ function modalAddClass(){
     <div class="field"><label>Grade level</label><select id="f-grade" required><option value="">— Choose a level first —</option></select></div>
     <div class="field" id="f-student-type-field" style="display:none;"><label>Student type</label><select id="f-student-type"><option value="Regular">Regular</option><option value="Irregular">Irregular</option></select></div>
     <div class="field"><label>Section name</label><input type="text" id="f-section" list="f-section-list" placeholder="e.g. Section 1 - Faith" autocomplete="off" required><datalist id="f-section-list"></datalist><div class="helper">Type a new section, or pick a matching one already on record.</div></div>
-    <div class="field"><label>Assign teacher (optional)</label>
+    <div class="field"><label>Homeroom adviser (optional)</label>
       <select id="f-teacher"><option value="">— Unassigned —</option>${db.users.filter(u=>u.role==='teacher').map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
     </div>
     <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Create section</button></div>
@@ -1705,15 +1941,34 @@ function attachModalHandlers(type){
       await saveDB(); closeModal(); showToast('Settings updated.');
     } else if(type==='messages'){
       const toId = document.getElementById('f-message-to').value;
-      const subject = document.getElementById('f-message-subject').value.trim();
-      const body = document.getElementById('f-message-body').value.trim();
-      if(!toId || !subject || !body){ alert('Complete the message before sending.'); return; }
+      const bodyField = document.getElementById('f-message-body');
+      const body = bodyField ? bodyField.value.trim() : '';
+      const fileInput = document.getElementById('f-message-file');
+      const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+      if(!toId){ alert('Choose someone to message first.'); return; }
+      if(!body && !file){ return; } // nothing to send, quietly ignore (e.g. stray Enter)
+      if(file && file.size > 4 * 1024 * 1024){
+        alert('That file is too large (about ' + fmtFileSize(file.size) + '). Please keep it under ~4MB.');
+        return;
+      }
+      const sendBtn = document.querySelector('.thread-send-btn');
+      if(sendBtn){ sendBtn.disabled = true; }
+      let fileData = {};
+      if(file){
+        try{
+          fileData = { fileName: file.name, fileSize: file.size, fileMimeType: file.type, fileDataUrl: await readFileAsDataUrl(file) };
+        }catch(err){
+          console.error('message attachment read failed', err);
+          alert('That file could not be read. Please try again.');
+          if(sendBtn){ sendBtn.disabled = false; }
+          return;
+        }
+      }
       await mergeLatestMessages();
-      db.messages.push({ id:uid('msg'), fromId:state.currentUser.id, toId, subject, body, sentAt:new Date().toISOString() });
+      db.messages.push({ id:uid('msg'), fromId:state.currentUser.id, toId, body, ...fileData, sentAt:new Date().toISOString() });
       await saveDB();
-      state.modal.payload = { mode:'list' };
+      state.modal.payload = { mode:'thread', otherId: toId };
       renderModal();
-      showToast('Message sent.');
     } else if(type==='profile'){
       const user = state.currentUser;
       const email = document.getElementById('f-profile-email').value.trim().toLowerCase();
@@ -1732,7 +1987,7 @@ function attachModalHandlers(type){
       const username = document.getElementById('f-username').value.trim();
       const password = document.getElementById('f-password').value;
       if(db.users.some(u=>u.username===username || (u.email||'').toLowerCase()===email)){ alert('That username or email is already taken.'); return; }
-      db.users.push({ id: uid('u'), role:'teacher', username, email, password, name });
+      db.users.push({ id: uid('u'), role:'teacher', username, email, password, name, createdAt:new Date().toISOString() });
       await saveDB(); closeModal(); showToast('Teacher account created.');
     } else if(type==='addStudent'){
       const name = document.getElementById('f-name').value.trim();
@@ -1744,7 +1999,7 @@ function attachModalHandlers(type){
       const level = document.getElementById('f-level').value;
       const studentType = needsStudentType(level) ? document.getElementById('f-student-type').value : '';
       if(db.users.some(u=>u.username===username || (u.email||'').toLowerCase()===email)){ alert('That username or email is already taken.'); return; }
-      db.users.push({ id: uid('u'), role:'student', username, email, password, name, lrn, classId, studentType });
+      db.users.push({ id: uid('u'), role:'student', username, email, password, name, lrn, classId, studentType, createdAt:new Date().toISOString() });
       await saveDB(); closeModal(); showToast('Student account created.');
     } else if(type==='addClass'){
       const level = document.getElementById('f-level').value;
@@ -1754,7 +2009,7 @@ function attachModalHandlers(type){
       const studentType = needsStudentType(level) ? document.getElementById('f-student-type').value : '';
       if(!level){ alert('Choose an education level first.'); return; }
       if(!grade){ alert('Choose a grade/year level.'); return; }
-      db.classes.push({ id: uid('c'), level, grade, section, teacherId, studentType });
+      db.classes.push({ id: uid('c'), level, grade, section, teacherId, studentType, createdAt:new Date().toISOString() });
       await saveDB(); closeModal(); showToast('Section created.');
     } else if(type==='addSchedule'){
       const classSubjectId = document.getElementById('f-schedule-cs').value;
@@ -1857,7 +2112,7 @@ function attachModalHandlers(type){
       if(!subjectId){ alert('Choose a subject first.'); return; }
       const classId = state.modal.payload.classId;
       if(db.classSubjects.some(cs=>cs.classId===classId && cs.subjectId===subjectId)){ alert('That subject is already assigned to this class.'); return; }
-      db.classSubjects.push({ id:uid('cs'), classId, subjectId, teacherId });
+      db.classSubjects.push({ id:uid('cs'), classId, subjectId, teacherId, createdAt:new Date().toISOString() });
       await saveDB(); closeModal(); showToast('Subject assigned to class.');
     }
   };
