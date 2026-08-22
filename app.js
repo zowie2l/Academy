@@ -37,7 +37,6 @@ let state = {
   selectedClassId: null,
   selectedClassSubjectId: null,
   selectedStudentSubjectId: null,
-  attendanceSlotId: null,
   modal: null,
   sidebarOpen: false,
   toast: null,
@@ -163,6 +162,102 @@ function showToast(msg){
   toastTimer = setTimeout(()=>{ state.toast = null; toastTimer = null; render(); }, 2400);
 }
 
+/* ---------------------- alert sounds (notifications / messages) ---------------------- */
+let audioCtx = null;
+function unlockAudio(){
+  if(!audioCtx){
+    try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ /* Web Audio unavailable */ }
+  }
+  if(audioCtx && audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
+}
+// Browsers block audio until the user has interacted with the page at least once;
+// this primes the AudioContext on the first click/keypress so later alert sounds can play.
+document.addEventListener('click', unlockAudio, { once:true });
+document.addEventListener('keydown', unlockAudio, { once:true });
+
+function playTone(freq, duration, delay, type){
+  if(!audioCtx) return;
+  setTimeout(()=>{
+    try{
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type || 'sine';
+      osc.frequency.value = freq;
+      const now = audioCtx.currentTime;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.03);
+    }catch(e){ /* ignore playback errors */ }
+  }, delay || 0);
+}
+// Bell = a bright two-note chime (higher pitch)
+function playNotificationSound(){ playTone(880, 0.14, 0); playTone(1318.5, 0.16, 130); }
+// Message = a softer double "ping" (lower pitch, same note twice)
+function playMessageSound(){ playTone(587.33, 0.12, 0); playTone(587.33, 0.12, 160); }
+
+let alertPollTimer = null;
+let knownNotificationIds = new Set();
+let knownMessageIds = new Set();
+// Establish which items are already unread *before* we start listening, so we
+// only ever play a sound for things that appear after the user is logged in —
+// not for the backlog that was already sitting there.
+function primeAlertBaseline(){
+  const user = state.currentUser;
+  if(!user){ knownNotificationIds = new Set(); knownMessageIds = new Set(); return; }
+  knownNotificationIds = new Set(unreadNotificationsForUser(user, state.view).map(item=>item.id));
+  knownMessageIds = new Set(unreadMessagesForUser(user).map(item=>item.id));
+}
+// Update just the bell/message badges in place, without a full render(), so a
+// background poll never wipes out something the user is in the middle of typing.
+function updateAlertBadgesInPlace(){
+  const user = state.currentUser;
+  if(!user) return;
+  const bellBtn = document.querySelector('[data-open-account-modal="notifications"]');
+  const msgBtn = document.querySelector('[data-open-account-modal="messages"]');
+  const notifCount = unreadNotificationsForUser(user, state.view).length;
+  const msgCount = unreadMessagesForUser(user).length;
+  if(bellBtn) bellBtn.innerHTML = `&#128276;${notifCount ? `<span class="notification-count">${notifCount}</span>` : ''}`;
+  if(msgBtn) msgBtn.innerHTML = `&#128172;${msgCount ? `<span class="notification-count">${msgCount}</span>` : ''}`;
+}
+async function pollForUpdates(){
+  if(!state.currentUser || state.view==='login') return;
+  try{
+    const { data, error } = await supabaseClient
+      .from(APP_STATE_TABLE)
+      .select('value')
+      .eq('key', DB_KEY)
+      .maybeSingle();
+    if(error || !data || !data.value) return;
+    db = normalizeDB(data.value);
+    try{ localStorage.setItem(DB_KEY, JSON.stringify(db)); }catch(e){ /* ignore quota errors */ }
+    const freshUser = getUser(state.currentUser.id);
+    if(!freshUser) return; // account may have been removed
+    state.currentUser = freshUser;
+    const notifs = unreadNotificationsForUser(freshUser, state.view);
+    const msgs = unreadMessagesForUser(freshUser);
+    const newNotifs = notifs.filter(item=>!knownNotificationIds.has(item.id));
+    const newMsgs = msgs.filter(item=>!knownMessageIds.has(item.id));
+    if(newNotifs.length) playNotificationSound();
+    if(newMsgs.length) playMessageSound();
+    knownNotificationIds = new Set(notifs.map(item=>item.id));
+    knownMessageIds = new Set(msgs.map(item=>item.id));
+    updateAlertBadgesInPlace();
+  }catch(e){ console.error('pollForUpdates failed', e); }
+}
+function startAlertPolling(){
+  if(alertPollTimer) clearInterval(alertPollTimer);
+  primeAlertBaseline();
+  alertPollTimer = setInterval(pollForUpdates, 20000);
+}
+function stopAlertPolling(){
+  if(alertPollTimer) clearInterval(alertPollTimer);
+  alertPollTimer = null;
+}
+
 /* ---------------------- helpers ---------------------- */
 function esc(str){ return (str===undefined||str===null) ? '' : String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function classLabel(cls){ if(!cls) return '—'; const type = cls.studentType ? ` (${cls.studentType})` : ''; return `${cls.grade} — ${cls.section}${type}`; }
@@ -215,7 +310,6 @@ function schedulesOfTeacher(teacherId){
   return db.schedules.filter(s=>csIds.includes(s.classSubjectId));
 }
 function todayDayName(){ const idx = new Date().getDay()-1; return idx>=0 && idx<SCHOOL_DAYS.length ? SCHOOL_DAYS[idx] : null; }
-function currentTimeStr(){ const now = new Date(); return String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0'); }
 function fmtTime(t){
   if(!t) return '—';
   const [h,m] = t.split(':').map(Number);
@@ -323,8 +417,10 @@ function attemptLogin(identifier, password){
   if(u.role==='student') state.studentTab = 'overview';
   if(u.role==='student') state.selectedStudentSubjectId = null;
   render();
+  startAlertPolling();
 }
 function logout(){
+  stopAlertPolling();
   state.currentUser = null; state.view='login'; state.loginError=''; state.sidebarOpen=false;
   render();
 }
@@ -439,9 +535,10 @@ function renderShell(mainHTML, role){
 function renderAccountTools(role){
   const u = state.currentUser;
   const notifications = unreadNotificationsForUser(u, role);
+  const unreadMsgs = unreadMessagesForUser(u);
   return `<div class="account-tools">
     <button class="tool-btn" data-open-account-modal="notifications" aria-label="Notifications" title="Notifications">&#128276;${notifications.length ? `<span class="notification-count">${notifications.length}</span>` : ''}</button>
-    <button class="tool-btn" data-open-account-modal="messages" aria-label="Messages" title="Messages">&#128172;</button>
+    <button class="tool-btn" data-open-account-modal="messages" aria-label="Messages" title="Messages">&#128172;${unreadMsgs.length ? `<span class="notification-count">${unreadMsgs.length}</span>` : ''}</button>
     <button class="profile-btn" data-open-account-modal="profile" title="Profile">${userAvatar(u)}<span class="profile-name">${esc(u.name)}</span></button>
     <button class="tool-btn settings-btn" data-open-account-modal="settings" aria-label="Account settings" title="Account settings">&#9881;</button>
   </div>`;
@@ -478,6 +575,18 @@ async function markNotificationsRead(){
   if(!user) return;
   const ids = notificationsForUser(user, state.view).map(item=>item.id);
   user.seenNotificationIds = Array.from(new Set([...(user.seenNotificationIds||[]), ...ids]));
+  await saveDB();
+}
+function unreadMessagesForUser(user){
+  if(!user) return [];
+  const read = new Set(Array.isArray(user.readMessageIds) ? user.readMessageIds : []);
+  return db.messages.filter(msg=>msg.toId===user.id && !read.has(msg.id));
+}
+async function markMessagesRead(){
+  const user = state.currentUser;
+  if(!user) return;
+  const ids = db.messages.filter(msg=>msg.toId===user.id).map(msg=>msg.id);
+  user.readMessageIds = Array.from(new Set([...(user.readMessageIds||[]), ...ids]));
   await saveDB();
 }
 function attachShellHandlers(){
@@ -811,7 +920,7 @@ function renderTeacherMain(){
       <div class="g">${esc(c.grade)}</div><div class="s">${esc(c.section)} · ${studentsOfClass(c.id).length} students</div>
     </button>`).join('')}
   </div>
-  ${teacherSubjects.length && tab!=='attendance' ? `<div class="subject-tabs">${teacherSubjects.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedClassSubjectId?'active':''}" data-select-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : ''}
+  ${teacherSubjects.length ? `<div class="subject-tabs">${teacherSubjects.map(cs=>{ const subject=getSubject(cs.subjectId); return `<button class="tab-btn ${cs.id===state.selectedClassSubjectId?'active':''}" data-select-subject="${cs.id}">${esc(subject.name)}</button>`; }).join('')}</div>` : ''}
   ${body}`;
 }
 function tabTitleTeacher(tab){
@@ -866,56 +975,13 @@ function renderTeacherPost(cls){
   `;
 }
 function renderTeacherAttendance(cls){
-  const teacherId = state.currentUser.id;
-  const teacherCsIds = subjectAssignmentsOfClass(cls.id).filter(cs=>cs.teacherId===teacherId).map(cs=>cs.id);
-  const dayName = todayDayName();
-  const todaysSlots = dayName ? db.schedules.filter(s=>teacherCsIds.includes(s.classSubjectId) && s.day===dayName).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')) : [];
-
-  if(!todaysSlots.length){
-    return `<div class="card empty"><div class="glyph">🗓️</div>You have no class with ${classLabel(cls)} today${dayName?` (${dayName})`:' — no school today'}. There is nothing to take attendance for.</div>
-    <div class="card" style="margin-top:18px;">
-      <div class="section-title">Your weekly schedule for ${classLabel(cls)}</div>
-      ${renderWeekGrid(schedulesOfClass(cls.id).filter(s=>teacherCsIds.includes(s.classSubjectId)), {})}
-    </div>`;
-  }
-
-  const nowStr = currentTimeStr();
-  const nowSlot = todaysSlots.find(s=>s.startTime<=nowStr && nowStr<s.endTime) || null;
-  let activeSlot = todaysSlots.find(s=>s.id===state.attendanceSlotId);
-  if(!activeSlot) activeSlot = nowSlot || todaysSlots[0];
-  state.attendanceSlotId = activeSlot.id;
-  const activeCs = getClassSubject(activeSlot.classSubjectId);
-  const activeSubject = activeCs ? getSubject(activeCs.subjectId) : null;
-
   const students = studentsOfClass(cls.id);
   const today = new Date().toISOString().slice(0,10);
-  const existing = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===activeCs.id && a.date===today);
+  const existing = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===state.selectedClassSubjectId && a.date===today);
   const records = existing ? existing.records : {};
-
   return `
-  <div class="card" style="margin-bottom:18px;">
-    <div class="section-title">Today's schedule — ${dayName}</div>
-    <div class="helper">Pick a period below to take or review its attendance. The period happening right now is marked <b>Now</b>.</div>
-    <div class="period-strip">
-      ${todaysSlots.map(s=>{
-        const cs = getClassSubject(s.classSubjectId);
-        const subject = cs ? getSubject(cs.subjectId) : null;
-        const isNow = nowSlot && s.id===nowSlot.id;
-        const isActive = s.id===activeSlot.id;
-        return `<button type="button" class="period-chip ${isActive?'active':''} ${isNow?'now':''}" data-select-period="${s.id}">
-          <div class="mono time">${fmtTime(s.startTime)}–${fmtTime(s.endTime)}</div>
-          <div class="subj">${esc(subject ? subject.name : 'Unknown subject')}</div>
-          ${s.room ? `<div class="room">Room ${esc(s.room)}</div>` : ''}
-          ${isNow ? '<span class="pill pill-gold" style="margin-top:6px;">Now</span>' : ''}
-        </button>`;
-      }).join('')}
-    </div>
-  </div>
   <div class="card">
-    <div class="section-title">Record attendance — ${esc(activeSubject ? activeSubject.name : 'Unknown subject')}
-      <span class="mono" style="font-weight:600;">${fmtDate(today)}</span>
-      ${nowSlot && nowSlot.id===activeSlot.id ? '<span class="pill pill-gold">In progress</span>' : ''}
-    </div>
+    <div class="section-title">Record attendance — <span class="mono" style="font-weight:600;">${fmtDate(today)}</span></div>
     ${students.length===0 ? `<div class="empty">No students enrolled in this section yet.</div>` : `
     <div class="att-grid" style="margin-bottom:6px;">
       <div class="att-head">Student</div><div class="att-head" style="text-align:center;">Present</div><div class="att-head" style="text-align:center;">Late</div><div class="att-head" style="text-align:center;">Absent</div>
@@ -929,13 +995,13 @@ function renderTeacherAttendance(cls){
         <button class="att-btn a ${cur==='absent'?'sel':''}" data-att="${s.id}" data-status="absent">✕</button>
       </div>`;
     }).join('')}
-    <div style="margin-top:16px;"><button class="btn btn-gold" id="save-attendance-btn" data-attendance-cs="${activeCs.id}">Save attendance for this period</button></div>
+    <div style="margin-top:16px;"><button class="btn btn-gold" id="save-attendance-btn">Save today's attendance</button></div>
     `}
   </div>
   <div class="card" style="margin-top:18px;">
-    <div class="section-title">Recent attendance history — ${esc(activeSubject ? activeSubject.name : '')}</div>
+    <div class="section-title">Recent attendance history</div>
     <table><thead><tr><th>Date</th><th>Present</th><th>Late</th><th>Absent</th></tr></thead>
-    <tbody>${db.attendance.filter(a=>a.classId===cls.id && a.classSubjectId===activeCs.id).sort((a,b)=>b.date.localeCompare(a.date)).map(a=>{
+    <tbody>${db.attendance.filter(a=>a.classId===cls.id && (!state.selectedClassSubjectId || a.classSubjectId===state.selectedClassSubjectId || !a.classSubjectId)).sort((a,b)=>b.date.localeCompare(a.date)).map(a=>{
       const vals = Object.values(a.records);
       return `<tr><td>${fmtDate(a.date)}</td><td>${vals.filter(v=>v==='present').length}</td><td>${vals.filter(v=>v==='late').length}</td><td>${vals.filter(v=>v==='absent').length}</td></tr>`;
     }).join('') || `<tr><td colspan="4" class="empty">No attendance recorded yet.</td></tr>`}</tbody></table>
@@ -984,9 +1050,8 @@ function renderTeacherBehavior(cls){
   }).join('') : `<div class="card empty"><div class="glyph">📝</div>No behavior notes recorded for this section yet.</div>`}`;
 }
 function attachTeacherHandlers(){
-  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.attendanceSlotId = null; state.teacherTab = 'roster'; render(); });
+  document.querySelectorAll('[data-select-class]').forEach(b=>b.onclick=()=>{ state.selectedClassId = b.dataset.selectClass; state.selectedClassSubjectId = null; state.teacherTab = 'roster'; render(); });
   document.querySelectorAll('[data-select-subject]').forEach(b=>b.onclick=()=>{ state.selectedClassSubjectId = b.dataset.selectSubject; render(); });
-  document.querySelectorAll('[data-select-period]').forEach(b=>b.onclick=()=>{ state.attendanceSlotId = b.dataset.selectPeriod; render(); });
   const pw = document.getElementById('post-work-btn'); if(pw) pw.onclick=()=>openModal('postWork');
   document.querySelectorAll('[data-view-submissions]').forEach(b=>b.onclick=()=>openModal('viewSubmissions', {materialId: b.dataset.viewSubmissions}));
   document.querySelectorAll('[data-remove-mat]').forEach(b=>b.onclick=async ()=>{
@@ -1007,10 +1072,9 @@ function attachTeacherHandlers(){
   const sab = document.getElementById('save-attendance-btn');
   if(sab) sab.onclick = async ()=>{
     const cls = getClass(state.selectedClassId);
-    const attendanceCsId = sab.dataset.attendanceCs;
     const today = new Date().toISOString().slice(0,10);
-    let rec = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===attendanceCsId && a.date===today);
-    if(!rec){ rec = { id: uid('a'), classId: cls.id, classSubjectId: attendanceCsId, date: today, records:{} }; db.attendance.push(rec); }
+    let rec = db.attendance.find(a=>a.classId===cls.id && a.classSubjectId===state.selectedClassSubjectId && a.date===today);
+    if(!rec){ rec = { id: uid('a'), classId: cls.id, classSubjectId: state.selectedClassSubjectId, date: today, records:{} }; db.attendance.push(rec); }
     document.querySelectorAll('[data-student-row]').forEach(row=>{
       const sel = row.querySelector('.att-btn.sel');
       if(sel) rec.records[row.dataset.studentRow] = sel.dataset.status;
@@ -1206,6 +1270,7 @@ function attachStudentHandlers(){
 /* ======================= MODALS ======================= */
 async function openModal(type, payload){
   if(type==='notifications') await markNotificationsRead();
+  if(type==='messages') await markMessagesRead();
   state.modal = {type, payload};
   render();
 }
