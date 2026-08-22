@@ -589,6 +589,22 @@ async function markMessagesRead(){
   user.readMessageIds = Array.from(new Set([...(user.readMessageIds||[]), ...ids]));
   await saveDB();
 }
+// The whole app persists as one JSON blob, so sending a message while our local
+// copy is stale would overwrite (and silently drop) anything another user saved
+// in the meantime — including messages sent *to* us. Pull the latest message
+// list from the server and merge it in right before we send, so nothing is lost.
+async function mergeLatestMessages(){
+  try{
+    const { data, error } = await supabaseClient
+      .from(APP_STATE_TABLE)
+      .select('value')
+      .eq('key', DB_KEY)
+      .maybeSingle();
+    if(error || !data || !data.value || !Array.isArray(data.value.messages)) return;
+    const known = new Set(db.messages.map(msg=>msg.id));
+    data.value.messages.forEach(msg=>{ if(!known.has(msg.id)){ db.messages.push(msg); known.add(msg.id); } });
+  }catch(e){ console.error('mergeLatestMessages failed', e); }
+}
 function attachShellHandlers(){
   const mt = document.getElementById('menu-toggle');
   if(mt) mt.onclick = ()=>{ state.sidebarOpen = !state.sidebarOpen; render(); };
@@ -1345,6 +1361,10 @@ function renderModal(){
     }
   }
   if(t==='messages'){
+    const newBtn = document.getElementById('msg-new-btn');
+    if(newBtn) newBtn.onclick = ()=>{ state.modal.payload = { mode:'compose' }; renderModal(); };
+    const backBtn = document.getElementById('msg-back-btn');
+    if(backBtn) backBtn.onclick = ()=>{ state.modal.payload = { mode:'list' }; renderModal(); };
     const searchInput = document.getElementById('f-message-to-search');
     const hiddenInput = document.getElementById('f-message-to');
     const suggestionsBox = document.getElementById('f-message-to-suggestions');
@@ -1440,29 +1460,35 @@ function modalSettings(){
 }
 function modalMessagesEnhanced(){
   const user = state.currentUser;
+  const payload = state.modal.payload || {};
+  const mode = payload.mode || 'list';
   const messages = db.messages.filter(msg=>msg.fromId===user.id || msg.toId===user.id).sort((a,b)=>(b.sentAt||'').localeCompare(a.sentAt||''));
-  return `<h3>Messages</h3>
-  <form id="modal-form">
-    <div class="field">
-      <label>Send to</label>
-      <div class="recipient-picker">
-        <input type="hidden" id="f-message-to" value="">
-        <input type="text" id="f-message-to-search" placeholder="Type a name…" autocomplete="off">
-        <div id="f-message-to-suggestions" class="recipient-suggestions" style="display:none;"></div>
-        <div id="f-message-to-selected" class="recipient-selected" style="display:none;"></div>
+  if(mode==='compose'){
+    return `<div class="modal-header-row"><h3>New message</h3><button type="button" class="btn btn-ghost btn-sm" id="msg-back-btn">&larr; Back</button></div>
+    <form id="modal-form">
+      <div class="field">
+        <label>Send to</label>
+        <div class="recipient-picker">
+          <input type="hidden" id="f-message-to" value="">
+          <input type="text" id="f-message-to-search" placeholder="Type a name…" autocomplete="off">
+          <div id="f-message-to-suggestions" class="recipient-suggestions" style="display:none;"></div>
+          <div id="f-message-to-selected" class="recipient-selected" style="display:none;"></div>
+        </div>
       </div>
-    </div>
-    <div class="field"><label>Subject</label><input type="text" id="f-message-subject" required></div>
-    <div class="field"><label>Message</label><textarea id="f-message-body" required></textarea></div>
-    <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button><button type="submit" class="btn btn-gold">Send message</button></div>
-  </form>
+      <div class="field"><label>Subject</label><input type="text" id="f-message-subject" required></div>
+      <div class="field"><label>Message</label><textarea id="f-message-body" required></textarea></div>
+      <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn btn-gold">Send message</button></div>
+    </form>`;
+  }
+  return `<div class="modal-header-row"><h3>Messages</h3><button type="button" class="btn btn-gold btn-sm" id="msg-new-btn">+ New message</button></div>
   <div class="message-list">
     ${messages.length ? messages.map(msg=>{
       const other = getUser(msg.fromId===user.id ? msg.toId : msg.fromId);
       const direction = msg.fromId===user.id ? 'To' : 'From';
       return `<div class="message-item"><div class="row1"><b>${esc(msg.subject)}</b><span>${fmtDate((msg.sentAt||'').slice(0,10))}</span></div><div class="meta">${direction} ${esc(other ? other.name : 'Unknown user')}</div><div>${esc(msg.body)}</div></div>`;
-    }).join('') : '<div class="empty">No messages yet.</div>'}
-  </div>`;
+    }).join('') : '<div class="empty"><div class="glyph">&#128172;</div>No messages yet.</div>'}
+  </div>
+  <div class="modal-actions"><button type="button" class="btn btn-ghost" id="modal-cancel">Close</button></div>`;
 }
 function modalProfileEnhanced(){
   const user = state.currentUser;
@@ -1682,8 +1708,12 @@ function attachModalHandlers(type){
       const subject = document.getElementById('f-message-subject').value.trim();
       const body = document.getElementById('f-message-body').value.trim();
       if(!toId || !subject || !body){ alert('Complete the message before sending.'); return; }
+      await mergeLatestMessages();
       db.messages.push({ id:uid('msg'), fromId:state.currentUser.id, toId, subject, body, sentAt:new Date().toISOString() });
-      await saveDB(); closeModal(); showToast('Message sent.');
+      await saveDB();
+      state.modal.payload = { mode:'list' };
+      renderModal();
+      showToast('Message sent.');
     } else if(type==='profile'){
       const user = state.currentUser;
       const email = document.getElementById('f-profile-email').value.trim().toLowerCase();
